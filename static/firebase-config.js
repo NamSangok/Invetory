@@ -1,51 +1,33 @@
 // ==============================================================================
 // 🔥 Firebase 클라우드 연동 설정 (Firebase Cloud Config)
 // ==============================================================================
-// Firebase 콘솔 (https://console.firebase.google.com)에서 프로젝트 생성 후
-// 웹 앱(</>) 추가 시 발급되는 설정을 아래에 입력하거나, 대시보드 화면의 [Firebase 설정] 모달에 입력하세요.
+// Firebase 프로젝트: inventory-fa6a7
 // ==============================================================================
 
-let firebaseConfig = {
-    apiKey: "",
-    authDomain: "",
-    projectId: "",
-    storageBucket: "",
-    messagingSenderId: "",
-    appId: ""
+const firebaseConfig = {
+    apiKey: "AIzaSyAtkcINkt_VVdLc03mnMEKwd3oy99BE-0E",
+    authDomain: "inventory-fa6a7.firebaseapp.com",
+    projectId: "inventory-fa6a7",
+    storageBucket: "inventory-fa6a7.firebasestorage.app",
+    messagingSenderId: "1029222926666",
+    appId: "1:1029222926666:web:d05a943a4d9af3fe6619b3",
+    measurementId: "G-RWSEKGK09G"
 };
 
-// 로컬 스토리지에 저장된 사용자 Firebase 설정이 있다면 우선 적용
-try {
-    const savedConfig = localStorage.getItem('custom_firebase_config');
-    if (savedConfig) {
-        const parsed = JSON.parse(savedConfig);
-        if (parsed.apiKey && parsed.projectId) {
-            firebaseConfig = parsed;
-        }
-    }
-} catch (e) {
-    console.warn("로컬 Firebase 설정 로드 실패:", e);
-}
-
 // Firebase 설정 유효성 검사
-const isFirebaseConfigured = Boolean(
-    firebaseConfig.apiKey && 
-    firebaseConfig.apiKey.length > 5 && 
-    firebaseConfig.projectId && 
-    firebaseConfig.projectId.length > 2
-);
+const isFirebaseConfigured = true;
 
 let cloudDb = null;
 let cloudAuth = null;
 
-if (isFirebaseConfigured && typeof firebase !== 'undefined') {
+if (typeof firebase !== 'undefined') {
     try {
         if (!firebase.apps.length) {
             firebase.initializeApp(firebaseConfig);
         }
         cloudDb = firebase.firestore();
         cloudAuth = firebase.auth();
-        console.log("🔥 Firebase Cloud Firestore가 정상 초기화되었습니다. (Project: " + firebaseConfig.projectId + ")");
+        console.log("🔥 Firebase Cloud Firestore가 활성화되었습니다. (Project: inventory-fa6a7)");
     } catch (e) {
         console.error("Firebase 초기화 오류:", e);
     }
