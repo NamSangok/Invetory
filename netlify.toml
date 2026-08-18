@@ -1,0 +1,9 @@
+# Netlify 설정 파일
+[build]
+  publish = "static"
+
+# SPA 라우팅 및 리다이렉트 설정
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
