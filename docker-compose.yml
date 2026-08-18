@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  jmt-inventory:
+    build: .
+    container_name: jmt_inventory
+    ports:
+      - "8000:8000"
+    volumes:
+      # NAS의 현재 폴더와 컨테이너의 /app 폴더를 동기화하여 DB 데이터를 보존합니다.
+      - ./:/app
+    restart: always

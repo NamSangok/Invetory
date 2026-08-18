@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.env
+.venv/
+env/
+venv/
+ENV/
+
+# Database (optional to ignore or keep)
+# inventory.db is kept or ignored depending on preference
+
+# Node / Firebase
+node_modules/
+.firebase/
+firebase-debug.log
+firestore-debug.log
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
