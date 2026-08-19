@@ -2172,14 +2172,15 @@ async function openNetworkModal() {
 
 function downloadExcelTemplate() {
     const headers = [
-        ["구분(part/product)", "품명", "규격", "카테고리", "단위", "적재위치", "단가", "초기재고", "안전재고", "비고"],
-        ["part", "의료용 실리콘 튜브", "OD 2.0mm", "원자재", "M", "창고 A-01", 1200, 500, 200, "예시 데이터"],
-        ["product", "경막외카테터", "EDEN-NC305", "완제품", "EA", "완제품실 B-1", 45000, 100, 50, "예시 데이터"]
+        ["품목코드(바코드)", "구분(part/product)", "품명", "규격", "카테고리", "단위", "적재위치", "단가", "초기재고", "안전재고", "비고"],
+        ["PRT-1001", "part", "의료용 실리콘 튜브", "OD 2.0mm", "원자재", "M", "창고 A-01", 1200, 500, 200, "품목코드 직접 지정 예시"],
+        ["8801234567890", "product", "경막외카테터", "EDEN-NC305", "완제품", "EA", "완제품실 B-1", 45000, 100, 50, "기존 바코드 번호 직접 입력 예시"],
+        ["", "part", "루어락 커넥터", "Female PP", "부자재", "EA", "창고 B-02", 350, 1000, 300, "코드 비워둘 시 시스템 자동 발급"]
     ];
 
     const ws = XLSX.utils.aoa_to_sheet(headers);
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "품목등록양식");
+    XLSX.utils.book_append_sheet(wb, ws, "품목일괄등록양식");
     XLSX.writeFile(wb, "품목일괄등록_표준양식.xlsx");
 }
 
@@ -2210,26 +2211,76 @@ async function processExcelUpload() {
                 throw new Error('엑셀 파일에 유효한 데이터가 없습니다.');
             }
 
+            const headerRow = (rows[0] || []).map(h => String(h || '').trim().toLowerCase());
+            
+            // Check if column 0 is item_code (e.g. contains '코드' or '바코드' or 'code')
+            const hasCodeCol = headerRow[0] && (
+                headerRow[0].includes('코드') || 
+                headerRow[0].includes('바코드') || 
+                headerRow[0].includes('code')
+            );
+
             let successCnt = 0;
             for (let i = 1; i < rows.length; i++) {
                 const r = rows[i];
-                if (!r || r.length === 0 || !r[1]) continue;
+                if (!r || r.length === 0) continue;
 
-                let type = (r[0] || 'part').toString().trim().toLowerCase();
+                let code = null;
+                let type = 'part';
+                let name = '';
+                let spec = null;
+                let category = '일반';
+                let unit = 'EA';
+                let location = null;
+                let unit_price = 0;
+                let current_stock = 0;
+                let safety_stock = 0;
+                let note = null;
+
+                if (hasCodeCol) {
+                    // Format with Item Code: [code, type, name, spec, category, unit, location, unit_price, stock, safety, note]
+                    code = r[0] ? String(r[0]).trim() : null;
+                    type = (r[1] || 'part').toString().trim().toLowerCase();
+                    name = r[2] ? String(r[2]).trim() : '';
+                    spec = r[3] ? String(r[3]).trim() : null;
+                    category = r[4] ? String(r[4]).trim() : (type.includes('완') || type.includes('prod') ? '완제품' : '원자재');
+                    unit = r[5] ? String(r[5]).trim() : 'EA';
+                    location = r[6] ? String(r[6]).trim() : null;
+                    unit_price = parseInt(r[7]) || 0;
+                    current_stock = parseInt(r[8]) || 0;
+                    safety_stock = parseInt(r[9]) || 0;
+                    note = r[10] ? String(r[10]).trim() : null;
+                } else {
+                    // Legacy Format: [type, name, spec, category, unit, location, unit_price, stock, safety, note]
+                    type = (r[0] || 'part').toString().trim().toLowerCase();
+                    name = r[1] ? String(r[1]).trim() : '';
+                    spec = r[2] ? String(r[2]).trim() : null;
+                    category = r[3] ? String(r[3]).trim() : (type.includes('완') || type.includes('prod') ? '완제품' : '원자재');
+                    unit = r[4] ? String(r[4]).trim() : 'EA';
+                    location = r[5] ? String(r[5]).trim() : null;
+                    unit_price = parseInt(r[6]) || 0;
+                    current_stock = parseInt(r[7]) || 0;
+                    safety_stock = parseInt(r[8]) || 0;
+                    note = r[9] ? String(r[9]).trim() : null;
+                }
+
+                if (!name) continue;
+
                 if (type.includes('완') || type.includes('prod')) type = 'product';
                 else type = 'part';
 
                 const itemObj = {
+                    item_code: code,
                     item_type: type,
-                    name: String(r[1]).trim(),
-                    spec: r[2] ? String(r[2]).trim() : null,
-                    category: r[3] ? String(r[3]).trim() : (type === 'product' ? '완제품' : '원자재'),
-                    unit: r[4] ? String(r[4]).trim() : 'EA',
-                    location: r[5] ? String(r[5]).trim() : null,
-                    unit_price: parseInt(r[6]) || 0,
-                    current_stock: parseInt(r[7]) || 0,
-                    safety_stock: parseInt(r[8]) || 0,
-                    note: r[9] ? String(r[9]).trim() : null
+                    name: name,
+                    spec: spec,
+                    category: category,
+                    unit: unit,
+                    location: location,
+                    unit_price: unit_price,
+                    current_stock: current_stock,
+                    safety_stock: safety_stock,
+                    note: note
                 };
 
                 await apiRequest('/api/items', {

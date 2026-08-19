@@ -1094,9 +1094,12 @@
             <div class="p-6 space-y-4">
                 <div class="p-4 bg-teal-50 border border-teal-100 rounded-xl text-xs text-teal-800 space-y-2">
                     <p class="font-bold flex items-center"><i class="fa-solid fa-circle-info mr-1.5"></i> 엑셀 업로드 양식 안내</p>
-                    <p>엑셀 파일의 첫 행에 다음 열 헤더가 포함되어야 합니다: <br><code>구분(part/product), 품명, 규격, 카테고리, 단위, 적재위치, 단가, 현재고, 안전재고, 비고</code></p>
-                    <button onclick="downloadExcelTemplate()" class="px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-xs font-bold inline-flex items-center">
-                        <i class="fa-solid fa-download mr-1.5"></i> 표준 템플릿 파일 받기 (.xlsx)
+                    <p class="leading-relaxed">엑셀 파일의 첫 행에 다음 열 헤더가 포함되어야 합니다: <br>
+                        <code>품목코드(바코드), 구분(part/product), 품명, 규격, 카테고리, 단위, 적재위치, 단가, 초기재고, 안전재고, 비고</code>
+                    </p>
+                    <p class="text-[11px] text-teal-700">※ <strong>품목코드(바코드)</strong> 열에 기존 바코드 번호나 고유 코드를 입력할 수 있으며, 비워둘 시 시스템이 자동 발급합니다.</p>
+                    <button onclick="downloadExcelTemplate()" class="px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded-lg text-xs font-bold inline-flex items-center shadow-xs">
+                        <i class="fa-solid fa-download mr-1.5"></i> 품목코드 포함 표준 템플릿 받기 (.xlsx)
                     </button>
                 </div>
 
