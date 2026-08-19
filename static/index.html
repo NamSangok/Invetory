@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>생산 부품 및 완제품 입출고 관리 시스템 (Cloud Ready)</title>
+    <title>생산 부품 및 완제품 입출고 관리 시스템</title>
     <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
@@ -45,12 +45,6 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <!-- HTML5-QRCode (Camera Barcode/QR Scanner) -->
     <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
-
-    <!-- Firebase SDK (v10 compat) -->
-    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth-compat.js"></script>
-    <script src="firebase-config.js"></script>
 
     <style>
         body { font-family: 'Pretendard', sans-serif; background-color: #f8fafc; }
@@ -121,11 +115,7 @@
                 <span>월별 통계 및 보고서</span>
             </button>
 
-            <div class="pt-5 px-3 pb-2 text-[11px] font-semibold text-slate-400 tracking-wider uppercase">클라우드 & 도구</div>
-            <button onclick="openFirebaseModal()" class="w-full flex items-center px-3.5 py-2 text-amber-300 hover:bg-amber-950/40 rounded-lg text-left text-xs font-semibold transition-colors border border-amber-500/30 bg-amber-500/10">
-                <i class="fa-solid fa-cloud w-6 text-center mr-2 text-amber-400"></i>
-                <span id="sidebar-cloud-status">Firebase 클라우드 연동</span>
-            </button>
+            <div class="pt-5 px-3 pb-2 text-[11px] font-semibold text-slate-400 tracking-wider uppercase">도구 & 편의기능</div>
             <button onclick="openScannerModal()" class="w-full flex items-center px-3.5 py-2 text-slate-400 hover:bg-slate-800/80 hover:text-teal-300 rounded-lg text-left text-sm transition-colors">
                 <i class="fa-solid fa-barcode w-6 text-center mr-2"></i>
                 <span>바코드/QR 스캐너</span>
@@ -141,7 +131,7 @@
             <div class="flex items-center justify-between text-xs text-slate-400 mb-2">
                 <div class="flex items-center space-x-2">
                     <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                    <span class="font-medium text-slate-300" id="connection-status-text">로컬 서버 작동 중</span>
+                    <span class="font-medium text-slate-300">시스템 정상 작동 중</span>
                 </div>
                 <span class="text-[10px] text-slate-400" id="server-clock">--:--</span>
             </div>
@@ -166,12 +156,6 @@
 
             <!-- Header Quick Actions -->
             <div class="flex items-center space-x-2 lg:space-x-3">
-                <!-- Cloud Status Pill Button -->
-                <button onclick="openFirebaseModal()" id="header-cloud-btn" class="hidden sm:flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all border bg-slate-100 text-slate-600 hover:bg-slate-200 border-slate-200">
-                    <i class="fa-solid fa-cloud text-amber-500"></i>
-                    <span id="header-cloud-status-text">로컬 모드 (클라우드 연동 가능)</span>
-                </button>
-
                 <button onclick="openInboundModal()" class="px-3 py-1.5 lg:px-3.5 lg:py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-lg text-xs lg:text-sm font-medium shadow-sm transition-all flex items-center space-x-1.5 active:scale-95">
                     <i class="fa-solid fa-arrow-down"></i>
                     <span>입고 등록</span>
@@ -667,75 +651,6 @@
     </main>
 
     <!-- ================= MODALS ================= -->
-
-    <!-- 0. 🔥 Firebase 클라우드 연동 및 다른 장소 PC 접속 설정 모달 -->
-    <div id="firebaseModal" class="fixed inset-0 bg-slate-900/60 z-50 hidden items-center justify-center p-4 backdrop-blur-xs">
-        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-xl overflow-hidden animate-fadeIn">
-            <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-gradient-to-r from-amber-50 to-orange-50">
-                <div class="flex items-center space-x-2">
-                    <span class="w-8 h-8 rounded-lg bg-amber-100 text-amber-600 flex items-center justify-center text-base"><i class="fa-solid fa-cloud"></i></span>
-                    <div>
-                        <h3 class="text-base font-bold text-slate-800">Firebase 클라우드 연동 & 외부 PC 접속 설정</h3>
-                        <p class="text-[11px] text-slate-500">다른 장소(재택/출장/타사업장)의 PC에서 접속할 수 있는 클라우드 연동</p>
-                    </div>
-                </div>
-                <button onclick="closeModal('firebaseModal')" class="text-slate-400 hover:text-slate-600 p-1">
-                    <i class="fa-solid fa-xmark text-lg"></i>
-                </button>
-            </div>
-            
-            <div class="p-6 space-y-4 max-h-[80vh] overflow-y-auto">
-                <!-- Status Box -->
-                <div class="p-4 rounded-xl border" id="firebase-status-box">
-                    <!-- Dynamic status inside app.js -->
-                </div>
-
-                <!-- Easy Guide Accordion / Steps -->
-                <div class="bg-slate-50 rounded-xl p-4 border border-slate-200 text-xs space-y-2">
-                    <h4 class="font-bold text-slate-800 flex items-center">
-                        <i class="fa-brands fa-google text-red-500 mr-1.5"></i> Firebase 연동 3단계 가이드
-                    </h4>
-                    <ol class="list-decimal list-inside space-y-1 text-slate-600 leading-relaxed">
-                        <li><a href="https://console.firebase.google.com" target="_blank" class="text-brand-600 underline font-semibold">Firebase 콘솔</a>에 접속하여 <b>새 프로젝트</b>를 생성합니다.</li>
-                        <li><b>Firestore Database</b>를 생성하고 (테스트 모드로 시작), <b>프로젝트 설정 > 웹 앱(&lt;/&gt;)</b>을 추가합니다.</li>
-                        <li>발급된 <code class="bg-white px-1 py-0.5 border rounded">firebaseConfig</code> 객체를 아래 입력창에 붙여넣고 저장하세요.</li>
-                    </ol>
-                </div>
-
-                <!-- Config Input Form -->
-                <div class="space-y-3">
-                    <label class="block text-xs font-bold text-slate-700">Firebase 웹 앱 설정 (JSON 또는 개별 입력)</label>
-                    <textarea id="firebaseConfigJsonInput" rows="5" placeholder='{\n  "apiKey": "AIzaSy...",\n  "authDomain": "my-app.firebaseapp.com",\n  "projectId": "my-app-12345",\n  "storageBucket": "my-app.appspot.com",\n  "messagingSenderId": "...",\n  "appId": "..."\n}' class="w-full p-3 font-mono text-xs bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-2 focus:ring-amber-500/20"></textarea>
-                    
-                    <div class="flex items-center justify-between">
-                        <button type="button" onclick="saveFirebaseConfigFromInput()" class="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold shadow-xs flex items-center space-x-1.5">
-                            <i class="fa-solid fa-floppy-disk"></i>
-                            <span>클라우드 설정 저장 및 연결</span>
-                        </button>
-                        <button type="button" onclick="resetFirebaseConfig()" class="text-xs text-rose-600 hover:underline">
-                            설정 초기화 (로컬 모드로 복귀)
-                        </button>
-                    </div>
-                </div>
-
-                <!-- One-click Cloud Data Migration -->
-                <div class="pt-3 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                    <div>
-                        <h5 class="text-xs font-bold text-slate-800">기존 로컬 데이터 클라우드로 내보내기</h5>
-                        <p class="text-[11px] text-slate-500">현재 로컬 DB(136개 품목)를 Firebase Firestore로 일괄 동기화</p>
-                    </div>
-                    <button type="button" onclick="uploadAllLocalDataToFirestore()" class="px-3.5 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-xs font-bold whitespace-nowrap shadow-xs flex items-center space-x-1">
-                        <i class="fa-solid fa-cloud-arrow-up"></i>
-                        <span>로컬 데이터 클라우드 업로드</span>
-                    </button>
-                </div>
-            </div>
-            
-            <div class="px-6 py-3 bg-slate-50 border-t border-slate-100 flex justify-end">
-                <button type="button" onclick="closeModal('firebaseModal')" class="px-4 py-2 bg-slate-200 text-slate-700 rounded-xl text-xs font-medium">닫기</button>
-            </div>
-        </div>
-    </div>
 
     <!-- 1. 품목 등록 / 수정 모달 -->
     <div id="itemModal" class="fixed inset-0 bg-slate-900/60 z-50 hidden items-center justify-center p-4 backdrop-blur-xs">

@@ -1,5 +1,5 @@
 // ==============================================================================
-// 스마트 생산·재고 관리 시스템 (Frontend Engine with Firebase Cloud Sync)
+// 스마트 생산·재고 관리 시스템 (Frontend Engine)
 // ==============================================================================
 
 let cachedItems = [];
@@ -15,16 +15,10 @@ let html5QrScanner = null;
 let trendChart = null;
 let distributionChart = null;
 
-// Unsubscribe hooks for Firestore real-time listeners
-let unsubscribeItems = null;
-let unsubscribeTransactions = null;
-let unsubscribeNotices = null;
-
 // Initialization
 document.addEventListener('DOMContentLoaded', () => {
     initClock();
-    updateCloudStatusUI();
-    initDataEngine();
+    preloadItemOptions();
     switchTab('dashboard');
 });
 
@@ -39,42 +33,6 @@ function initClock() {
     };
     updateTime();
     setInterval(updateTime, 1000);
-}
-
-// Data Engine (Dual-mode: Local API vs Firebase Firestore)
-function initDataEngine() {
-    if (isFirebaseConfigured && cloudDb) {
-        console.log("🚀 Firestore Realtime 모드로 시작합니다.");
-        // Listen to items real-time
-        unsubscribeItems = cloudDb.collection('items').onSnapshot(snapshot => {
-            const items = [];
-            snapshot.forEach(doc => {
-                const data = doc.data();
-                items.push({ ...data, id: data.id || doc.id });
-            });
-            cachedItems = items;
-            preloadItemOptions();
-            if (currentActiveTab === 'items') renderItemsTable(items);
-            if (currentActiveTab === 'dashboard') calculateAndRenderDashboardFromCache();
-            if (currentActiveTab === 'production') loadProductionTab();
-        }, err => console.error("Firestore Items listener error:", err));
-
-        // Listen to transactions real-time
-        unsubscribeTransactions = cloudDb.collection('transactions').orderBy('timestamp', 'desc').limit(500).onSnapshot(snapshot => {
-            const txs = [];
-            snapshot.forEach(doc => {
-                const data = doc.data();
-                txs.push({ ...data, id: data.id || doc.id });
-            });
-            cachedTransactions = txs;
-            if (currentActiveTab === 'transactions') renderTransactionsTable(txs);
-            if (currentActiveTab === 'dashboard') calculateAndRenderDashboardFromCache();
-        }, err => console.error("Firestore Transactions listener error:", err));
-
-    } else {
-        console.log("🖥️ 로컬 FastAPI 백엔드 모드로 시작합니다.");
-        preloadItemOptions();
-    }
 }
 
 // Mobile Sidebar Drawer Toggle
@@ -96,7 +54,7 @@ function switchTab(tabId) {
         btn.classList.remove('bg-brand-600', 'text-white', 'shadow-sm');
         btn.classList.add('text-slate-300', 'hover:bg-slate-800');
         const icon = btn.querySelector('i');
-        if (icon && !btn.id.includes('cloud')) icon.classList.remove('text-teal-300');
+        if (icon) icon.classList.remove('text-teal-300');
     });
 
     const activeBtn = document.getElementById(`btn-${tabId}`);
@@ -159,318 +117,60 @@ function closeModal(id) {
 }
 
 // ==============================================================================
-// 🔥 FIREBASE CLOUD SYNC & CONFIG LOGIC
-// ==============================================================================
-
-function updateCloudStatusUI() {
-    const headerBtn = document.getElementById('header-cloud-btn');
-    const headerText = document.getElementById('header-cloud-status-text');
-    const sidebarText = document.getElementById('sidebar-cloud-status');
-    const connText = document.getElementById('connection-status-text');
-
-    if (isFirebaseConfigured && cloudDb) {
-        if (headerBtn) {
-            headerBtn.className = 'hidden sm:flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all border bg-emerald-50 text-emerald-700 border-emerald-200';
-            headerText.innerText = `클라우드 연동됨 (${firebaseConfig.projectId})`;
-        }
-        if (sidebarText) sidebarText.innerText = `Firebase 클라우드 연동됨`;
-        if (connText) connText.innerText = `클라우드 실시간 동기화`;
-    } else {
-        if (headerBtn) {
-            headerBtn.className = 'hidden sm:flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all border bg-amber-50 text-amber-700 hover:bg-amber-100 border-amber-200';
-            headerText.innerText = `클라우드 연동 설정`;
-        }
-        if (sidebarText) sidebarText.innerText = `Firebase 클라우드 연동`;
-        if (connText) connText.innerText = `로컬 서버 작동 중`;
-    }
-}
-
-function openFirebaseModal() {
-    const statusBox = document.getElementById('firebase-status-box');
-    const jsonInput = document.getElementById('firebaseConfigJsonInput');
-
-    if (isFirebaseConfigured && cloudDb) {
-        const hostingUrl = `https://${firebaseConfig.projectId}.web.app`;
-        statusBox.className = 'p-4 rounded-xl border bg-emerald-50 border-emerald-200 text-emerald-800 space-y-2';
-        statusBox.innerHTML = `
-            <div class="flex items-center space-x-2">
-                <span class="w-3 h-3 rounded-full bg-emerald-500 animate-pulse"></span>
-                <strong class="text-xs font-bold">Firebase Cloud Firestore가 성공적으로 연결되어 있습니다!</strong>
-            </div>
-            <p class="text-xs">프로젝트 ID: <b class="font-mono text-emerald-900">${firebaseConfig.projectId}</b></p>
-            <div class="p-2.5 bg-white rounded-lg border border-emerald-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                <div>
-                    <span class="text-[11px] text-slate-500 block">다른 장소 PC 접속 주소 (Firebase Hosting):</span>
-                    <a href="${hostingUrl}" target="_blank" class="text-xs font-bold text-teal-700 underline font-mono">${hostingUrl}</a>
-                </div>
-                <button onclick="navigator.clipboard.writeText('${hostingUrl}'); Swal.fire('복사 완료', '접속 주소가 클립보드에 복사되었습니다.', 'success')" class="px-2.5 py-1 bg-emerald-100 hover:bg-emerald-200 text-emerald-800 rounded text-xs font-semibold">
-                    주소 복사
-                </button>
-            </div>
-        `;
-        jsonInput.value = JSON.stringify(firebaseConfig, null, 2);
-    } else {
-        statusBox.className = 'p-4 rounded-xl border bg-amber-50 border-amber-200 text-amber-800 space-y-2';
-        statusBox.innerHTML = `
-            <div class="flex items-center space-x-2">
-                <i class="fa-solid fa-triangle-exclamation text-amber-600"></i>
-                <strong class="text-xs font-bold">현재 로컬 모드로 작동 중입니다.</strong>
-            </div>
-            <p class="text-xs leading-relaxed">다른 장소(재택근무, 타 공장, 외근)의 PC나 모바일에서 접속하려면 아래에 Firebase 설정을 등록하세요.</p>
-        `;
-    }
-
-    openModal('firebaseModal');
-}
-
-function saveFirebaseConfigFromInput() {
-    const raw = document.getElementById('firebaseConfigJsonInput').value.trim();
-    if (!raw) {
-        Swal.fire('입력 필요', 'Firebase config JSON을 입력해주세요.', 'warning');
-        return;
-    }
-
-    try {
-        let configObj = null;
-        if (raw.startsWith('{')) {
-            configObj = JSON.parse(raw);
-        } else if (raw.includes('apiKey')) {
-            // If user pasted const firebaseConfig = { ... }
-            const jsonStr = raw.substring(raw.indexOf('{'), raw.lastIndexOf('}') + 1);
-            configObj = JSON.parse(jsonStr);
-        }
-
-        if (!configObj || !configObj.apiKey || !configObj.projectId) {
-            throw new Error('유효한 apiKey 및 projectId가 포함되어야 합니다.');
-        }
-
-        localStorage.setItem('custom_firebase_config', JSON.stringify(configObj));
-        Swal.fire({
-            icon: 'success',
-            title: 'Firebase 설정 저장 완료!',
-            text: '클라우드 실시간 모드로 전환하기 위해 페이지를 새로고침합니다.',
-            timer: 2000,
-            showConfirmButton: false
-        }).then(() => {
-            window.location.reload();
-        });
-
-    } catch (e) {
-        Swal.fire('형식 오류', 'Firebase Config JSON 형식이 올바르지 않습니다.\n' + e.message, 'error');
-    }
-}
-
-function resetFirebaseConfig() {
-    Swal.fire({
-        title: '클라우드 연동 해제',
-        text: 'Firebase 클라우드 설정을 초기화하고 로컬 서버 모드로 돌아가시겠습니까?',
-        icon: 'warning',
-        showCancelButton: true,
-        confirmButtonText: '초기화',
-        cancelButtonText: '취소'
-    }).then(res => {
-        if (res.isConfirmed) {
-            localStorage.removeItem('custom_firebase_config');
-            window.location.reload();
-        }
-    });
-}
-
-// One-click Migrate all local SQLite DB items to Firestore
-async function uploadAllLocalDataToFirestore() {
-    if (!isFirebaseConfigured || !cloudDb) {
-        Swal.fire('연동 필요', '먼저 위의 입력창에 Firebase 설정을 입력하고 연결해주세요.', 'warning');
-        return;
-    }
-
-    try {
-        Swal.fire({
-            title: '클라우드로 데이터 업로드 중...',
-            text: '로컬 데이터베이스의 품목 및 이력을 Firestore로 전송하고 있습니다.',
-            allowOutsideClick: false,
-            didOpen: () => Swal.showLoading()
-        });
-
-        const [itemsRes, txRes, noticesRes] = await Promise.all([
-            fetch('/api/items'),
-            fetch('/api/transactions?limit=1000'),
-            fetch('/api/notices')
-        ]);
-
-        const items = await itemsRes.json();
-        const txs = await txRes.json();
-        const notices = await noticesRes.json();
-
-        // 1. Batch upload items
-        const batch = cloudDb.batch();
-        items.forEach(item => {
-            const ref = cloudDb.collection('items').doc(String(item.id));
-            batch.set(ref, item);
-        });
-
-        // 2. Upload notices
-        notices.forEach(n => {
-            const ref = cloudDb.collection('notices').doc(String(n.id));
-            batch.set(ref, n);
-        });
-
-        await batch.commit();
-
-        // 3. Upload transactions
-        for (const tx of txs) {
-            await cloudDb.collection('transactions').doc(String(tx.id)).set(tx);
-        }
-
-        Swal.fire({
-            icon: 'success',
-            title: '클라우드 동기화 완료!',
-            html: `
-                <div class="text-left text-xs space-y-2">
-                    <p>총 <b>${items.length}개 품목</b> 및 <b>${txs.length}건의 이력</b>이 Firebase Firestore로 안전하게 업로드되었습니다.</p>
-                    <p class="text-slate-500">이제 다른 장소의 PC에서도 동일한 데이터로 실시간 협업이 가능합니다.</p>
-                </div>
-            `
-        });
-
-    } catch (err) {
-        Swal.fire('동기화 오류', err.message, 'error');
-    }
-}
-
-// ==============================================================================
 // 1. 대시보드 (DASHBOARD)
 // ==============================================================================
 
 async function loadDashboard() {
-    if (isFirebaseConfigured && cloudDb) {
-        calculateAndRenderDashboardFromCache();
-        return;
-    }
-
     try {
         const res = await fetch('/api/dashboard');
         if (!res.ok) throw new Error('대시보드 데이터를 불러오지 못했습니다.');
         const data = await res.json();
-        applyDashboardData(data);
+
+        // 1. KPI Cards
+        document.getElementById('dash-total-items').innerText = (data.total_items || 0).toLocaleString();
+        document.getElementById('dash-total-parts').innerText = (data.total_parts || 0).toLocaleString();
+        document.getElementById('dash-total-products').innerText = (data.total_products || 0).toLocaleString();
+
+        document.getElementById('dash-total-stock').innerText = (data.total_stock_quantity || 0).toLocaleString() + ' EA';
+        document.getElementById('dash-parts-stock').innerText = (data.parts_stock_quantity || 0).toLocaleString();
+        document.getElementById('dash-products-stock').innerText = (data.products_stock_quantity || 0).toLocaleString();
+        document.getElementById('dash-stock-value').innerText = '₩' + (data.total_stock_value || 0).toLocaleString();
+
+        document.getElementById('dash-today-in').innerText = (data.today_in || 0).toLocaleString();
+        document.getElementById('dash-today-out').innerText = (data.today_out || 0).toLocaleString();
+        document.getElementById('dash-month-in').innerText = (data.month_in || 0).toLocaleString();
+        document.getElementById('dash-month-out').innerText = (data.month_out || 0).toLocaleString();
+
+        const alertCount = (data.low_stock_alerts || []).length;
+        document.getElementById('dash-alert-count').innerText = alertCount.toLocaleString() + '건';
+        document.getElementById('dash-out-of-stock-label').innerText = `결품 품목: ${data.out_of_stock_count || 0}건`;
+        document.getElementById('low-stock-badge-count').innerText = alertCount + '건';
+
+        const sidebarBadge = document.getElementById('sidebar-alert-badge');
+        if (sidebarBadge) {
+            if (alertCount > 0) {
+                sidebarBadge.innerText = alertCount;
+                sidebarBadge.classList.remove('hidden');
+            } else {
+                sidebarBadge.classList.add('hidden');
+            }
+        }
+
+        // 2. Render Charts
+        renderTrendChart(data.daily_trend || []);
+        renderDistributionChart(data.categories_distribution || {}, data.total_parts, data.total_products);
+
+        // 3. Render Low Stock Alerts Widget
+        renderLowStockAlerts(data.low_stock_alerts || []);
+
+        // 4. Render Recent Transactions
+        loadRecentTransactions();
+
+        // 5. Render Notices
+        loadNotices();
+
     } catch (err) {
         console.error('loadDashboard error:', err);
-    }
-}
-
-function calculateAndRenderDashboardFromCache() {
-    const items = cachedItems || [];
-    const allTxs = cachedTransactions || [];
-
-    const total_items = items.length;
-    const parts = items.filter(i => i.item_type === 'part');
-    const products = items.filter(i => i.item_type === 'product');
-
-    const total_stock_quantity = items.reduce((acc, cur) => acc + (cur.current_stock || 0), 0);
-    const parts_stock_quantity = parts.reduce((acc, cur) => acc + (cur.current_stock || 0), 0);
-    const products_stock_quantity = products.reduce((acc, cur) => acc + (cur.current_stock || 0), 0);
-    const total_stock_value = items.reduce((acc, cur) => acc + ((cur.current_stock || 0) * (cur.unit_price || 0)), 0);
-
-    const low_stock_alerts = items.filter(i => i.safety_stock > 0 && i.current_stock < i.safety_stock).map(item => ({
-        id: item.id,
-        name: item.name,
-        item_code: item.item_code || `ITM-${item.id}`,
-        item_type: item.item_type,
-        spec: item.spec || '-',
-        unit: item.unit || 'EA',
-        safety_stock: item.safety_stock,
-        current_stock: item.current_stock,
-        shortage: Math.max(0, item.safety_stock - item.current_stock),
-        location: item.location || '-'
-    }));
-
-    const out_of_stock_count = items.filter(i => i.current_stock === 0).length;
-
-    // Daily Trend
-    const now = new Date();
-    const daily_trend = [];
-    for (let i = 6; i >= 0; i--) {
-        const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
-        const dStr = `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`;
-        const dayPrefix = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-
-        const inQty = allTxs.filter(t => t.timestamp && t.timestamp.startsWith(dayPrefix) && t.tx_type === 'in').reduce((a, c) => a + (c.quantity || 0), 0);
-        const outQty = allTxs.filter(t => t.timestamp && t.timestamp.startsWith(dayPrefix) && t.tx_type === 'out').reduce((a, c) => a + (c.quantity || 0), 0);
-        daily_trend.push({ date: dStr, in_qty: inQty, out_qty: outQty });
-    }
-
-    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-    const monthStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-
-    const today_in = allTxs.filter(t => t.timestamp && t.timestamp.startsWith(todayStr) && t.tx_type === 'in').reduce((a, c) => a + (c.quantity || 0), 0);
-    const today_out = allTxs.filter(t => t.timestamp && t.timestamp.startsWith(todayStr) && t.tx_type === 'out').reduce((a, c) => a + (c.quantity || 0), 0);
-    const month_in = allTxs.filter(t => t.timestamp && t.timestamp.startsWith(monthStr) && t.tx_type === 'in').reduce((a, c) => a + (c.quantity || 0), 0);
-    const month_out = allTxs.filter(t => t.timestamp && t.timestamp.startsWith(monthStr) && t.tx_type === 'out').reduce((a, c) => a + (c.quantity || 0), 0);
-
-    const categories_count = {};
-    items.forEach(item => {
-        const cat = item.category || (item.item_type === 'product' ? '완제품' : '원자재');
-        categories_count[cat] = (categories_count[cat] || 0) + (item.current_stock || 0);
-    });
-
-    applyDashboardData({
-        total_items,
-        total_parts: parts.length,
-        total_products: products.length,
-        total_stock_quantity,
-        parts_stock_quantity,
-        products_stock_quantity,
-        total_stock_value,
-        out_of_stock_count,
-        today_in,
-        today_out,
-        month_in,
-        month_out,
-        low_stock_alerts,
-        daily_trend,
-        categories_distribution: categories_count
-    });
-
-    loadRecentTransactions();
-    loadNotices();
-}
-
-function applyDashboardData(data) {
-    document.getElementById('dash-total-items').innerText = (data.total_items || 0).toLocaleString();
-    document.getElementById('dash-total-parts').innerText = (data.total_parts || 0).toLocaleString();
-    document.getElementById('dash-total-products').innerText = (data.total_products || 0).toLocaleString();
-
-    document.getElementById('dash-total-stock').innerText = (data.total_stock_quantity || 0).toLocaleString() + ' EA';
-    document.getElementById('dash-parts-stock').innerText = (data.parts_stock_quantity || 0).toLocaleString();
-    document.getElementById('dash-products-stock').innerText = (data.products_stock_quantity || 0).toLocaleString();
-    document.getElementById('dash-stock-value').innerText = '₩' + (data.total_stock_value || 0).toLocaleString();
-
-    document.getElementById('dash-today-in').innerText = (data.today_in || 0).toLocaleString();
-    document.getElementById('dash-today-out').innerText = (data.today_out || 0).toLocaleString();
-    document.getElementById('dash-month-in').innerText = (data.month_in || 0).toLocaleString();
-    document.getElementById('dash-month-out').innerText = (data.month_out || 0).toLocaleString();
-
-    const alertCount = (data.low_stock_alerts || []).length;
-    document.getElementById('dash-alert-count').innerText = alertCount.toLocaleString() + '건';
-    document.getElementById('dash-out-of-stock-label').innerText = `결품 품목: ${data.out_of_stock_count || 0}건`;
-    document.getElementById('low-stock-badge-count').innerText = alertCount + '건';
-
-    const sidebarBadge = document.getElementById('sidebar-alert-badge');
-    if (sidebarBadge) {
-        if (alertCount > 0) {
-            sidebarBadge.innerText = alertCount;
-            sidebarBadge.classList.remove('hidden');
-        } else {
-            sidebarBadge.classList.add('hidden');
-        }
-    }
-
-    renderTrendChart(data.daily_trend || []);
-    renderDistributionChart(data.categories_distribution || {}, data.total_parts, data.total_products);
-    renderLowStockAlerts(data.low_stock_alerts || []);
-
-    if (!isFirebaseConfigured) {
-        loadRecentTransactions();
-        loadNotices();
     }
 }
 
@@ -611,47 +311,42 @@ async function loadRecentTransactions() {
     const container = document.getElementById('dash-recent-tx-container');
     if (!container) return;
 
-    let txs = [];
-    if (isFirebaseConfigured && cloudDb) {
-        txs = cachedTransactions.slice(0, 8);
-    } else {
-        try {
-            const res = await fetch('/api/transactions/recent?limit=8');
-            txs = await res.json();
-        } catch (err) {
-            console.error(err);
+    try {
+        const res = await fetch('/api/transactions/recent?limit=8');
+        const txs = await res.json();
+
+        if (txs.length === 0) {
+            container.innerHTML = `<div class="text-center py-10 text-slate-400 text-xs">최근 입출고 내역이 없습니다.</div>`;
+            return;
         }
-    }
 
-    if (txs.length === 0) {
-        container.innerHTML = `<div class="text-center py-10 text-slate-400 text-xs">최근 입출고 내역이 없습니다.</div>`;
-        return;
-    }
-
-    let html = '';
-    txs.forEach(tx => {
-        const isIn = tx.tx_type === 'in';
-        html += `
-            <div class="p-2.5 rounded-xl border border-slate-100 bg-white hover:bg-slate-50/80 flex items-center justify-between transition-colors">
-                <div class="flex items-center space-x-2.5 min-w-0">
-                    <div class="w-8 h-8 rounded-lg ${isIn ? 'bg-sky-100 text-sky-700' : 'bg-rose-100 text-rose-700'} flex items-center justify-center text-xs font-bold flex-shrink-0">
-                        <i class="fa-solid ${isIn ? 'fa-arrow-down' : 'fa-arrow-up'}"></i>
-                    </div>
-                    <div class="min-w-0">
-                        <div class="flex items-center space-x-1.5">
-                            <span class="text-xs font-bold text-slate-800 truncate">${tx.item_name}</span>
-                            <span class="text-[10px] text-slate-400 font-mono">${tx.item_code || ''}</span>
+        let html = '';
+        txs.forEach(tx => {
+            const isIn = tx.tx_type === 'in';
+            html += `
+                <div class="p-2.5 rounded-xl border border-slate-100 bg-white hover:bg-slate-50/80 flex items-center justify-between transition-colors">
+                    <div class="flex items-center space-x-2.5 min-w-0">
+                        <div class="w-8 h-8 rounded-lg ${isIn ? 'bg-sky-100 text-sky-700' : 'bg-rose-100 text-rose-700'} flex items-center justify-center text-xs font-bold flex-shrink-0">
+                            <i class="fa-solid ${isIn ? 'fa-arrow-down' : 'fa-arrow-up'}"></i>
                         </div>
-                        <p class="text-[11px] text-slate-500 truncate">${tx.sub_type || (isIn ? '입고' : '출고')} · ${tx.worker || '담당자미지정'} · ${(tx.timestamp || '').substring(5, 16)}</p>
+                        <div class="min-w-0">
+                            <div class="flex items-center space-x-1.5">
+                                <span class="text-xs font-bold text-slate-800 truncate">${tx.item_name}</span>
+                                <span class="text-[10px] text-slate-400 font-mono">${tx.item_code}</span>
+                            </div>
+                            <p class="text-[11px] text-slate-500 truncate">${tx.sub_type || (isIn ? '입고' : '출고')} · ${tx.worker || '담당자미지정'} · ${tx.timestamp.substring(5, 16)}</p>
+                        </div>
+                    </div>
+                    <div class="text-right flex-shrink-0">
+                        <span class="text-xs font-extrabold ${isIn ? 'text-sky-700' : 'text-rose-700'}">${isIn ? '+' : '-'}${tx.quantity.toLocaleString()} ${tx.unit}</span>
                     </div>
                 </div>
-                <div class="text-right flex-shrink-0">
-                    <span class="text-xs font-extrabold ${isIn ? 'text-sky-700' : 'text-rose-700'}">${isIn ? '+' : '-'}${(tx.quantity || 0).toLocaleString()} ${tx.unit || 'EA'}</span>
-                </div>
-            </div>
-        `;
-    });
-    container.innerHTML = html;
+            `;
+        });
+        container.innerHTML = html;
+    } catch (err) {
+        console.error('loadRecentTransactions error:', err);
+    }
 }
 
 // Notice Board
@@ -659,43 +354,37 @@ async function loadNotices() {
     const container = document.getElementById('dash-notices-container');
     if (!container) return;
 
-    let notices = [];
-    if (isFirebaseConfigured && cloudDb) {
-        const snap = await cloudDb.collection('notices').orderBy('created_at', 'desc').get();
-        snap.forEach(doc => notices.push({ ...doc.data(), id: doc.id }));
-    } else {
-        try {
-            const res = await fetch('/api/notices');
-            notices = await res.json();
-        } catch (err) {
-            console.error(err);
+    try {
+        const res = await fetch('/api/notices');
+        const notices = await res.json();
+
+        if (notices.length === 0) {
+            container.innerHTML = `<div class="text-center py-10 text-slate-400 text-xs">등록된 현장 공지 및 메모가 없습니다.</div>`;
+            return;
         }
-    }
 
-    if (notices.length === 0) {
-        container.innerHTML = `<div class="text-center py-10 text-slate-400 text-xs">등록된 현장 공지 및 메모가 없습니다.</div>`;
-        return;
-    }
-
-    let html = '';
-    notices.forEach(n => {
-        const isResolved = n.is_resolved === 1;
-        html += `
-            <div class="p-2.5 rounded-xl border ${isResolved ? 'bg-slate-50 border-slate-200 opacity-60' : 'bg-teal-50/40 border-teal-100'} flex items-start justify-between space-x-2 transition-all">
-                <div class="flex items-start space-x-2 flex-1 min-w-0">
-                    <input type="checkbox" ${isResolved ? 'checked' : ''} onchange="toggleNotice('${n.id}')" class="mt-0.5 rounded text-teal-600 focus:ring-teal-500 cursor-pointer">
-                    <div class="min-w-0">
-                        <p class="text-xs font-medium ${isResolved ? 'line-through text-slate-400' : 'text-slate-800'} break-words">${n.content}</p>
-                        <span class="text-[10px] text-slate-400">${n.created_at}</span>
+        let html = '';
+        notices.forEach(n => {
+            const isResolved = n.is_resolved === 1;
+            html += `
+                <div class="p-2.5 rounded-xl border ${isResolved ? 'bg-slate-50 border-slate-200 opacity-60' : 'bg-teal-50/40 border-teal-100'} flex items-start justify-between space-x-2 transition-all">
+                    <div class="flex items-start space-x-2 flex-1 min-w-0">
+                        <input type="checkbox" ${isResolved ? 'checked' : ''} onchange="toggleNotice(${n.id})" class="mt-0.5 rounded text-teal-600 focus:ring-teal-500 cursor-pointer">
+                        <div class="min-w-0">
+                            <p class="text-xs font-medium ${isResolved ? 'line-through text-slate-400' : 'text-slate-800'} break-words">${n.content}</p>
+                            <span class="text-[10px] text-slate-400">${n.created_at}</span>
+                        </div>
                     </div>
+                    <button onclick="deleteNotice(${n.id})" class="text-slate-400 hover:text-rose-600 text-xs p-1">
+                        <i class="fa-solid fa-trash-can"></i>
+                    </button>
                 </div>
-                <button onclick="deleteNotice('${n.id}')" class="text-slate-400 hover:text-rose-600 text-xs p-1">
-                    <i class="fa-solid fa-trash-can"></i>
-                </button>
-            </div>
-        `;
-    });
-    container.innerHTML = html;
+            `;
+        });
+        container.innerHTML = html;
+    } catch (err) {
+        console.error('loadNotices error:', err);
+    }
 }
 
 async function addNoticePrompt() {
@@ -710,44 +399,22 @@ async function addNoticePrompt() {
     });
 
     if (text && text.trim()) {
-        const nowStr = new Date().toISOString().replace('T', ' ').substring(0, 16);
-        if (isFirebaseConfigured && cloudDb) {
-            await cloudDb.collection('notices').add({
-                content: text.trim(),
-                is_resolved: 0,
-                created_at: nowStr
-            });
-        } else {
-            await fetch('/api/notices', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ content: text.trim() })
-            });
-        }
+        await fetch('/api/notices', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content: text.trim() })
+        });
         loadNotices();
     }
 }
 
 async function toggleNotice(id) {
-    if (isFirebaseConfigured && cloudDb) {
-        const ref = cloudDb.collection('notices').doc(String(id));
-        const doc = await ref.get();
-        if (doc.exists) {
-            const cur = doc.data().is_resolved || 0;
-            await ref.update({ is_resolved: cur === 1 ? 0 : 1 });
-        }
-    } else {
-        await fetch(`/api/notices/${id}/toggle`, { method: 'PUT' });
-    }
+    await fetch(`/api/notices/${id}/toggle`, { method: 'PUT' });
     loadNotices();
 }
 
 async function deleteNotice(id) {
-    if (isFirebaseConfigured && cloudDb) {
-        await cloudDb.collection('notices').doc(String(id)).delete();
-    } else {
-        await fetch(`/api/notices/${id}`, { method: 'DELETE' });
-    }
+    await fetch(`/api/notices/${id}`, { method: 'DELETE' });
     loadNotices();
 }
 
@@ -763,115 +430,90 @@ function filterLowStockView() {
 // ==============================================================================
 
 async function loadItems() {
-    const search = document.getElementById('item-search-input')?.value.toLowerCase() || '';
+    const search = document.getElementById('item-search-input')?.value || '';
     const category = document.getElementById('item-category-filter')?.value || '';
 
-    let items = [];
+    let url = `/api/items?`;
+    if (currentItemTypeFilter) url += `item_type=${encodeURIComponent(currentItemTypeFilter)}&`;
+    if (category) url += `category=${encodeURIComponent(category)}&`;
+    if (search) url += `search=${encodeURIComponent(search)}&`;
+    if (currentLowStockOnly) url += `low_stock_only=true&`;
 
-    if (isFirebaseConfigured && cloudDb) {
-        items = cachedItems.filter(i => {
-            if (currentItemTypeFilter && i.item_type !== currentItemTypeFilter) return false;
-            if (category && i.category !== category) return false;
-            if (currentLowStockOnly && !(i.safety_stock > 0 && i.current_stock < i.safety_stock)) return false;
-            if (search) {
-                const s = search;
-                const match = (i.name && i.name.toLowerCase().includes(s)) ||
-                    (i.item_code && i.item_code.toLowerCase().includes(s)) ||
-                    (i.spec && i.spec.toLowerCase().includes(s)) ||
-                    (i.location && i.location.toLowerCase().includes(s)) ||
-                    (i.note && i.note.toLowerCase().includes(s));
-                if (!match) return false;
+    try {
+        const res = await fetch(url);
+        const items = await res.json();
+        cachedItems = items;
+
+        const tableBody = document.getElementById('items-table-body');
+        document.getElementById('item-filtered-count').innerText = items.length.toLocaleString();
+
+        if (items.length === 0) {
+            tableBody.innerHTML = `<tr><td colspan="12" class="py-12 text-center text-slate-400">조건에 일치하는 품목이 없습니다.</td></tr>`;
+            return;
+        }
+
+        let html = '';
+        items.forEach(item => {
+            const isPart = item.item_type === 'part';
+            const isOutOfStock = item.current_stock === 0;
+            const isLowStock = item.safety_stock > 0 && item.current_stock < item.safety_stock;
+
+            let statusBadge = '';
+            if (isOutOfStock) {
+                statusBadge = '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-700 animate-pulse">결품(0)</span>';
+            } else if (isLowStock) {
+                statusBadge = '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-700">재고부족</span>';
+            } else {
+                statusBadge = '<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-700">정상</span>';
             }
-            return true;
+
+            html += `
+                <tr class="hover:bg-slate-50/80 transition-colors">
+                    <td class="py-3 px-4 font-mono font-bold text-teal-700">${item.item_code}</td>
+                    <td class="py-3 px-4">
+                        <span class="px-2 py-0.5 rounded-md text-[10px] font-bold ${isPart ? 'bg-indigo-50 text-indigo-700 border border-indigo-200' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'}">
+                            ${isPart ? '생산부품' : '완제품'}
+                        </span>
+                    </td>
+                    <td class="py-3 px-4 text-slate-600">${item.category || '-'}</td>
+                    <td class="py-3 px-4 font-bold text-slate-900">${item.name}</td>
+                    <td class="py-3 px-4 text-slate-500 font-mono">${item.spec || '-'}</td>
+                    <td class="py-3 px-4 text-slate-600">${item.unit || 'EA'}</td>
+                    <td class="py-3 px-4 text-slate-600"><span class="px-1.5 py-0.5 bg-slate-100 rounded text-[11px]">${item.location || '-'}</span></td>
+                    <td class="py-3 px-4 text-right text-slate-700">₩${(item.unit_price || 0).toLocaleString()}</td>
+                    <td class="py-3 px-4 text-right font-extrabold ${isOutOfStock ? 'text-rose-600' : (isLowStock ? 'text-amber-600' : 'text-slate-900')}">
+                        ${item.current_stock.toLocaleString()}
+                    </td>
+                    <td class="py-3 px-4 text-right text-slate-500">${item.safety_stock.toLocaleString()}</td>
+                    <td class="py-3 px-4 text-center">${statusBadge}</td>
+                    <td class="py-3 px-4 text-center">
+                        <div class="flex items-center justify-center space-x-1.5">
+                            <button onclick="openInboundModal(${item.id})" class="p-1 text-sky-600 hover:bg-sky-50 rounded" title="입고">
+                                <i class="fa-solid fa-arrow-down text-xs"></i>
+                            </button>
+                            <button onclick="openOutboundModal(${item.id})" class="p-1 text-rose-600 hover:bg-rose-50 rounded" title="출고">
+                                <i class="fa-solid fa-arrow-up text-xs"></i>
+                            </button>
+                            <button onclick="printItemLabel(${item.id})" class="p-1 text-slate-600 hover:bg-slate-100 rounded" title="바코드 라벨 인쇄">
+                                <i class="fa-solid fa-barcode text-xs"></i>
+                            </button>
+                            <button onclick="openItemModal(${item.id})" class="p-1 text-teal-600 hover:bg-teal-50 rounded" title="수정">
+                                <i class="fa-solid fa-pen-to-square text-xs"></i>
+                            </button>
+                            <button onclick="deleteItem(${item.id}, '${item.name}')" class="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded" title="삭제">
+                                <i class="fa-solid fa-trash-can text-xs"></i>
+                            </button>
+                        </div>
+                    </td>
+                </tr>
+            `;
         });
-    } else {
-        let url = `/api/items?`;
-        if (currentItemTypeFilter) url += `item_type=${encodeURIComponent(currentItemTypeFilter)}&`;
-        if (category) url += `category=${encodeURIComponent(category)}&`;
-        if (search) url += `search=${encodeURIComponent(search)}&`;
-        if (currentLowStockOnly) url += `low_stock_only=true&`;
+        tableBody.innerHTML = html;
+        document.getElementById('item-total-master-count').innerText = items.length;
 
-        try {
-            const res = await fetch(url);
-            items = await res.json();
-            cachedItems = items;
-        } catch (err) {
-            console.error('loadItems error:', err);
-        }
+    } catch (err) {
+        console.error('loadItems error:', err);
     }
-
-    renderItemsTable(items);
-}
-
-function renderItemsTable(items) {
-    const tableBody = document.getElementById('items-table-body');
-    if (!tableBody) return;
-
-    document.getElementById('item-filtered-count').innerText = items.length.toLocaleString();
-    document.getElementById('item-total-master-count').innerText = (cachedItems || []).length.toLocaleString();
-
-    if (items.length === 0) {
-        tableBody.innerHTML = `<tr><td colspan="12" class="py-12 text-center text-slate-400">조건에 일치하는 품목이 없습니다.</td></tr>`;
-        return;
-    }
-
-    let html = '';
-    items.forEach(item => {
-        const isPart = item.item_type === 'part';
-        const isOutOfStock = item.current_stock === 0;
-        const isLowStock = item.safety_stock > 0 && item.current_stock < item.safety_stock;
-
-        let statusBadge = '';
-        if (isOutOfStock) {
-            statusBadge = '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-700 animate-pulse">결품(0)</span>';
-        } else if (isLowStock) {
-            statusBadge = '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-700">재고부족</span>';
-        } else {
-            statusBadge = '<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-700">정상</span>';
-        }
-
-        html += `
-            <tr class="hover:bg-slate-50/80 transition-colors">
-                <td class="py-3 px-4 font-mono font-bold text-teal-700">${item.item_code}</td>
-                <td class="py-3 px-4">
-                    <span class="px-2 py-0.5 rounded-md text-[10px] font-bold ${isPart ? 'bg-indigo-50 text-indigo-700 border border-indigo-200' : 'bg-emerald-50 text-emerald-700 border border-emerald-200'}">
-                        ${isPart ? '생산부품' : '완제품'}
-                    </span>
-                </td>
-                <td class="py-3 px-4 text-slate-600">${item.category || '-'}</td>
-                <td class="py-3 px-4 font-bold text-slate-900">${item.name}</td>
-                <td class="py-3 px-4 text-slate-500 font-mono">${item.spec || '-'}</td>
-                <td class="py-3 px-4 text-slate-600">${item.unit || 'EA'}</td>
-                <td class="py-3 px-4 text-slate-600"><span class="px-1.5 py-0.5 bg-slate-100 rounded text-[11px]">${item.location || '-'}</span></td>
-                <td class="py-3 px-4 text-right text-slate-700">₩${(item.unit_price || 0).toLocaleString()}</td>
-                <td class="py-3 px-4 text-right font-extrabold ${isOutOfStock ? 'text-rose-600' : (isLowStock ? 'text-amber-600' : 'text-slate-900')}">
-                    ${(item.current_stock || 0).toLocaleString()}
-                </td>
-                <td class="py-3 px-4 text-right text-slate-500">${(item.safety_stock || 0).toLocaleString()}</td>
-                <td class="py-3 px-4 text-center">${statusBadge}</td>
-                <td class="py-3 px-4 text-center">
-                    <div class="flex items-center justify-center space-x-1.5">
-                        <button onclick="openInboundModal('${item.id}')" class="p-1 text-sky-600 hover:bg-sky-50 rounded" title="입고">
-                            <i class="fa-solid fa-arrow-down text-xs"></i>
-                        </button>
-                        <button onclick="openOutboundModal('${item.id}')" class="p-1 text-rose-600 hover:bg-rose-50 rounded" title="출고">
-                            <i class="fa-solid fa-arrow-up text-xs"></i>
-                        </button>
-                        <button onclick="printItemLabel('${item.id}')" class="p-1 text-slate-600 hover:bg-slate-100 rounded" title="바코드 라벨 인쇄">
-                            <i class="fa-solid fa-barcode text-xs"></i>
-                        </button>
-                        <button onclick="openItemModal('${item.id}')" class="p-1 text-teal-600 hover:bg-teal-50 rounded" title="수정">
-                            <i class="fa-solid fa-pen-to-square text-xs"></i>
-                        </button>
-                        <button onclick="deleteItem('${item.id}', '${item.name}')" class="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded" title="삭제">
-                            <i class="fa-solid fa-trash-can text-xs"></i>
-                        </button>
-                    </div>
-                </td>
-            </tr>
-        `;
-    });
-    tableBody.innerHTML = html;
 }
 
 function filterItemsByType(type) {
@@ -927,13 +569,10 @@ async function openItemModal(itemId = null) {
         document.getElementById('itemModalTitle').innerText = '품목 정보 수정';
         if (initialStockDiv) initialStockDiv.classList.add('hidden');
 
-        let item = cachedItems.find(i => String(i.id) === String(itemId));
-        if (!item && !isFirebaseConfigured) {
+        try {
             const res = await fetch(`/api/items/${itemId}`);
-            item = await res.json();
-        }
+            const item = await res.json();
 
-        if (item) {
             document.getElementById('itemFormId').value = item.id;
             document.getElementById('itemFormType').value = item.item_type;
             document.getElementById('itemFormCategory').value = item.category || '';
@@ -945,6 +584,9 @@ async function openItemModal(itemId = null) {
             document.getElementById('itemFormUnitPrice').value = item.unit_price || 0;
             document.getElementById('itemFormSafety').value = item.safety_stock || 0;
             document.getElementById('itemFormNote').value = item.note || '';
+        } catch (err) {
+            Swal.fire('오류', '품목 정보를 불러오지 못했습니다.', 'error');
+            return;
         }
     } else {
         document.getElementById('itemModalTitle').innerText = '신규 품목 등록';
@@ -975,36 +617,24 @@ async function submitItemForm(e) {
     }
 
     try {
-        if (isFirebaseConfigured && cloudDb) {
-            if (itemId) {
-                await cloudDb.collection('items').doc(String(itemId)).update(itemData);
-            } else {
-                const newId = Date.now();
-                const prefix = itemData.item_type === 'product' ? 'PRD' : 'PRT';
-                if (!itemData.item_code) itemData.item_code = `${prefix}-${String(newId).slice(-4)}`;
-                itemData.id = newId;
-                await cloudDb.collection('items').doc(String(newId)).set(itemData);
-            }
+        let res;
+        if (itemId) {
+            res = await fetch(`/api/items/${itemId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(itemData)
+            });
         } else {
-            let res;
-            if (itemId) {
-                res = await fetch(`/api/items/${itemId}`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(itemData)
-                });
-            } else {
-                res = await fetch('/api/items', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(itemData)
-                });
-            }
+            res = await fetch('/api/items', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(itemData)
+            });
+        }
 
-            if (!res.ok) {
-                const errData = await res.json();
-                throw new Error(errData.detail || '저장에 실패했습니다.');
-            }
+        if (!res.ok) {
+            const errData = await res.json();
+            throw new Error(errData.detail || '저장에 실패했습니다.');
         }
 
         closeModal('itemModal');
@@ -1016,6 +646,7 @@ async function submitItemForm(e) {
             showConfirmButton: false
         });
         loadItems();
+        preloadItemOptions();
     } catch (err) {
         Swal.fire('오류', err.message, 'error');
     }
@@ -1035,14 +666,11 @@ async function deleteItem(id, name) {
 
     if (result.isConfirmed) {
         try {
-            if (isFirebaseConfigured && cloudDb) {
-                await cloudDb.collection('items').doc(String(id)).delete();
-            } else {
-                const res = await fetch(`/api/items/${id}`, { method: 'DELETE' });
-                if (!res.ok) throw new Error('삭제에 실패했습니다.');
-            }
+            const res = await fetch(`/api/items/${id}`, { method: 'DELETE' });
+            if (!res.ok) throw new Error('삭제에 실패했습니다.');
             Swal.fire('삭제 완료', '품목이 삭제되었습니다.', 'success');
             loadItems();
+            preloadItemOptions();
         } catch (err) {
             Swal.fire('오류', err.message, 'error');
         }
@@ -1054,37 +682,36 @@ async function deleteItem(id, name) {
 // ==============================================================================
 
 async function preloadItemOptions() {
-    let items = cachedItems;
-    if (!isFirebaseConfigured || items.length === 0) {
-        try {
-            const res = await fetch('/api/items');
-            items = await res.json();
-            cachedItems = items;
-        } catch (e) { }
-    }
+    try {
+        const res = await fetch('/api/items');
+        const items = await res.json();
+        cachedItems = items;
 
-    const inboundSelect = document.getElementById('inboundItemId');
-    const outboundSelect = document.getElementById('outboundItemId');
-    const prodProductSelect = document.getElementById('prodModalProductId');
+        const inboundSelect = document.getElementById('inboundItemId');
+        const outboundSelect = document.getElementById('outboundItemId');
+        const prodProductSelect = document.getElementById('prodModalProductId');
 
-    if (inboundSelect) {
-        inboundSelect.innerHTML = '<option value="">입고할 품목을 선택하세요</option>' +
-            items.map(i => `<option value="${i.id}">[${i.item_code}] ${i.name} (${i.spec || '-'}) - 현재: ${i.current_stock}${i.unit}</option>`).join('');
-    }
-    if (outboundSelect) {
-        outboundSelect.innerHTML = '<option value="">출고할 품목을 선택하세요</option>' +
-            items.map(i => `<option value="${i.id}">[${i.item_code}] ${i.name} (${i.spec || '-'}) - 출고가능: ${i.current_stock}${i.unit}</option>`).join('');
-    }
-    if (prodProductSelect) {
-        const products = items.filter(i => i.item_type === 'product');
-        prodProductSelect.innerHTML = '<option value="">생산할 완제품을 선택하세요</option>' +
-            products.map(i => `<option value="${i.id}">[${i.item_code}] ${i.name} (${i.spec || '-'}) - 현재고: ${i.current_stock}${i.unit}</option>`).join('');
+        if (inboundSelect) {
+            inboundSelect.innerHTML = '<option value="">입고할 품목을 선택하세요</option>' +
+                items.map(i => `<option value="${i.id}">[${i.item_code}] ${i.name} (${i.spec || '-'}) - 현재: ${i.current_stock}${i.unit}</option>`).join('');
+        }
+        if (outboundSelect) {
+            outboundSelect.innerHTML = '<option value="">출고할 품목을 선택하세요</option>' +
+                items.map(i => `<option value="${i.id}">[${i.item_code}] ${i.name} (${i.spec || '-'}) - 출고가능: ${i.current_stock}${i.unit}</option>`).join('');
+        }
+        if (prodProductSelect) {
+            const products = items.filter(i => i.item_type === 'product');
+            prodProductSelect.innerHTML = '<option value="">생산할 완제품을 선택하세요</option>' +
+                products.map(i => `<option value="${i.id}">[${i.item_code}] ${i.name} (${i.spec || '-'}) - 현재고: ${i.current_stock}${i.unit}</option>`).join('');
+        }
+    } catch (err) {
+        console.error('preloadItemOptions error:', err);
     }
 }
 
 function updateInboundItemInfo() {
     const itemId = document.getElementById('inboundItemId').value;
-    const item = cachedItems.find(i => String(i.id) === String(itemId));
+    const item = cachedItems.find(i => i.id == itemId);
     const hint = document.getElementById('inboundItemHint');
     if (item && hint) {
         hint.innerHTML = `현재고: <strong class="text-teal-700">${item.current_stock} ${item.unit}</strong> | 위치: <strong>${item.location || '-'}</strong> | 단가: ₩${(item.unit_price || 0).toLocaleString()}`;
@@ -1096,7 +723,7 @@ function updateInboundItemInfo() {
 
 function updateOutboundItemInfo() {
     const itemId = document.getElementById('outboundItemId').value;
-    const item = cachedItems.find(i => String(i.id) === String(itemId));
+    const item = cachedItems.find(i => i.id == itemId);
     const hint = document.getElementById('outboundItemHint');
     if (item && hint) {
         hint.innerHTML = `출고 가능 현재고: <strong class="text-rose-700">${item.current_stock} ${item.unit}</strong> | 위치: <strong>${item.location || '-'}</strong>`;
@@ -1130,21 +757,13 @@ function openOutboundModal(preselectedItemId = null) {
 
 async function submitInboundForm(e) {
     e.preventDefault();
-    const itemId = document.getElementById('inboundItemId').value;
+    const itemId = parseInt(document.getElementById('inboundItemId').value);
     const qty = parseInt(document.getElementById('inboundQuantity').value);
 
     if (!itemId || !qty) return;
 
-    const item = cachedItems.find(i => String(i.id) === String(itemId));
-    const nowStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
-
     const data = {
-        item_id: parseInt(itemId) || itemId,
-        item_code: item ? item.item_code : '',
-        item_name: item ? item.name : '',
-        item_type: item ? item.item_type : '',
-        item_spec: item ? (item.spec || '-') : '-',
-        unit: item ? (item.unit || 'EA') : 'EA',
+        item_id: itemId,
         tx_type: 'in',
         sub_type: document.getElementById('inboundSubType').value,
         quantity: qty,
@@ -1152,27 +771,18 @@ async function submitInboundForm(e) {
         lot_number: document.getElementById('inboundLot').value.trim(),
         company_name: document.getElementById('inboundCompany').value.trim(),
         worker: document.getElementById('inboundWorker').value.trim(),
-        note: document.getElementById('inboundNote').value.trim(),
-        timestamp: nowStr
+        note: document.getElementById('inboundNote').value.trim()
     };
 
     try {
-        if (isFirebaseConfigured && cloudDb) {
-            // Update stock and add tx in Firestore
-            const itemRef = cloudDb.collection('items').doc(String(itemId));
-            const newStock = (item.current_stock || 0) + qty;
-            await itemRef.update({ current_stock: newStock });
-            await cloudDb.collection('transactions').add(data);
-        } else {
-            const res = await fetch('/api/transactions', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data)
-            });
-            if (!res.ok) {
-                const err = await res.json();
-                throw new Error(err.detail || '입고 처리에 실패했습니다.');
-            }
+        const res = await fetch('/api/transactions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || '입고 처리에 실패했습니다.');
         }
 
         closeModal('inboundModal');
@@ -1184,11 +794,9 @@ async function submitInboundForm(e) {
             showConfirmButton: false
         });
 
-        if (!isFirebaseConfigured) {
-            if (currentActiveTab === 'dashboard') loadDashboard();
-            if (currentActiveTab === 'items') loadItems();
-            if (currentActiveTab === 'transactions') loadTransactions();
-        }
+        if (currentActiveTab === 'dashboard') loadDashboard();
+        if (currentActiveTab === 'items') loadItems();
+        if (currentActiveTab === 'transactions') loadTransactions();
     } catch (err) {
         Swal.fire('입고 오류', err.message, 'error');
     }
@@ -1196,26 +804,13 @@ async function submitInboundForm(e) {
 
 async function submitOutboundForm(e) {
     e.preventDefault();
-    const itemId = document.getElementById('outboundItemId').value;
+    const itemId = parseInt(document.getElementById('outboundItemId').value);
     const qty = parseInt(document.getElementById('outboundQuantity').value);
 
     if (!itemId || !qty) return;
 
-    const item = cachedItems.find(i => String(i.id) === String(itemId));
-    if (item && item.current_stock < qty) {
-        Swal.fire('출고 불가', `현재고(${item.current_stock}${item.unit})보다 많은 수량을 출고할 수 없습니다.`, 'warning');
-        return;
-    }
-
-    const nowStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
-
     const data = {
-        item_id: parseInt(itemId) || itemId,
-        item_code: item ? item.item_code : '',
-        item_name: item ? item.name : '',
-        item_type: item ? item.item_type : '',
-        item_spec: item ? (item.spec || '-') : '-',
-        unit: item ? (item.unit || 'EA') : 'EA',
+        item_id: itemId,
         tx_type: 'out',
         sub_type: document.getElementById('outboundSubType').value,
         quantity: qty,
@@ -1223,26 +818,18 @@ async function submitOutboundForm(e) {
         lot_number: document.getElementById('outboundLot').value.trim(),
         company_name: document.getElementById('outboundCompany').value.trim(),
         worker: document.getElementById('outboundWorker').value.trim(),
-        note: document.getElementById('outboundNote').value.trim(),
-        timestamp: nowStr
+        note: document.getElementById('outboundNote').value.trim()
     };
 
     try {
-        if (isFirebaseConfigured && cloudDb) {
-            const itemRef = cloudDb.collection('items').doc(String(itemId));
-            const newStock = (item.current_stock || 0) - qty;
-            await itemRef.update({ current_stock: newStock });
-            await cloudDb.collection('transactions').add(data);
-        } else {
-            const res = await fetch('/api/transactions', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data)
-            });
-            if (!res.ok) {
-                const err = await res.json();
-                throw new Error(err.detail || '출고 처리에 실패했습니다.');
-            }
+        const res = await fetch('/api/transactions', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || '출고 처리에 실패했습니다.');
         }
 
         closeModal('outboundModal');
@@ -1254,117 +841,88 @@ async function submitOutboundForm(e) {
             showConfirmButton: false
         });
 
-        if (!isFirebaseConfigured) {
-            if (currentActiveTab === 'dashboard') loadDashboard();
-            if (currentActiveTab === 'items') loadItems();
-            if (currentActiveTab === 'transactions') loadTransactions();
-        }
+        if (currentActiveTab === 'dashboard') loadDashboard();
+        if (currentActiveTab === 'items') loadItems();
+        if (currentActiveTab === 'transactions') loadTransactions();
     } catch (err) {
         Swal.fire('출고 오류', err.message, 'error');
     }
 }
 
 async function loadTransactions() {
-    const search = document.getElementById('tx-search-input')?.value.toLowerCase() || '';
+    const search = document.getElementById('tx-search-input')?.value || '';
     const txType = document.getElementById('tx-type-filter')?.value || '';
     const itemType = document.getElementById('tx-item-type-filter')?.value || '';
     const startDate = document.getElementById('tx-start-date')?.value || '';
     const endDate = document.getElementById('tx-end-date')?.value || '';
 
-    let txs = [];
+    let url = `/api/transactions?`;
+    if (txType) url += `tx_type=${txType}&`;
+    if (itemType) url += `item_type=${itemType}&`;
+    if (startDate) url += `start_date=${startDate}&`;
+    if (endDate) url += `end_date=${endDate}&`;
+    if (search) url += `search=${encodeURIComponent(search)}&`;
 
-    if (isFirebaseConfigured && cloudDb) {
-        txs = cachedTransactions.filter(t => {
-            if (txType && t.tx_type !== txType) return false;
-            if (itemType && t.item_type !== itemType) return false;
-            if (startDate && t.timestamp && t.timestamp < startDate) return false;
-            if (endDate && t.timestamp && t.timestamp > endDate + ' 23:59:59') return false;
-            if (search) {
-                const s = search;
-                const match = (t.item_name && t.item_name.toLowerCase().includes(s)) ||
-                    (t.item_code && t.item_code.toLowerCase().includes(s)) ||
-                    (t.lot_number && t.lot_number.toLowerCase().includes(s)) ||
-                    (t.worker && t.worker.toLowerCase().includes(s)) ||
-                    (t.company_name && t.company_name.toLowerCase().includes(s)) ||
-                    (t.note && t.note.toLowerCase().includes(s));
-                if (!match) return false;
-            }
-            return true;
-        });
-    } else {
-        let url = `/api/transactions?`;
-        if (txType) url += `tx_type=${txType}&`;
-        if (itemType) url += `item_type=${itemType}&`;
-        if (startDate) url += `start_date=${startDate}&`;
-        if (endDate) url += `end_date=${endDate}&`;
-        if (search) url += `search=${encodeURIComponent(search)}&`;
+    try {
+        const res = await fetch(url);
+        const txs = await res.json();
+        cachedTransactions = txs;
 
-        try {
-            const res = await fetch(url);
-            txs = await res.json();
-            cachedTransactions = txs;
-        } catch (err) {
-            console.error('loadTransactions error:', err);
+        const tableBody = document.getElementById('tx-table-body');
+        document.getElementById('tx-count').innerText = txs.length.toLocaleString();
+
+        if (txs.length === 0) {
+            tableBody.innerHTML = `<tr><td colspan="13" class="py-12 text-center text-slate-400">조회된 입출고 이력이 없습니다.</td></tr>`;
+            return;
         }
+
+        let html = '';
+        txs.forEach(tx => {
+            const isIn = tx.tx_type === 'in';
+            const isPart = tx.item_type === 'part';
+
+            html += `
+                <tr class="hover:bg-slate-50/80 transition-colors">
+                    <td class="py-3 px-4 text-slate-500 font-mono text-[11px]">${tx.timestamp}</td>
+                    <td class="py-3 px-4">
+                        <span class="px-2 py-0.5 rounded text-[10px] font-bold ${isIn ? 'bg-sky-50 text-sky-700 border border-sky-200' : 'bg-rose-50 text-rose-700 border border-rose-200'}">
+                            ${isIn ? '입고' : '출고'}
+                        </span>
+                    </td>
+                    <td class="py-3 px-4 font-medium text-slate-700">${tx.sub_type || '-'}</td>
+                    <td class="py-3 px-4 font-mono text-teal-700 font-semibold">${tx.item_code}</td>
+                    <td class="py-3 px-4 font-bold text-slate-900">${tx.item_name}</td>
+                    <td class="py-3 px-4">
+                        <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold ${isPart ? 'bg-indigo-50 text-indigo-600' : 'bg-emerald-50 text-emerald-600'}">
+                            ${isPart ? '부품' : '완제품'}
+                        </span>
+                    </td>
+                    <td class="py-3 px-4 text-slate-500">${tx.item_spec || '-'}</td>
+                    <td class="py-3 px-4 text-right font-extrabold ${isIn ? 'text-sky-700' : 'text-rose-700'}">
+                        ${isIn ? '+' : '-'}${tx.quantity.toLocaleString()} ${tx.unit}
+                    </td>
+                    <td class="py-3 px-4 font-mono text-slate-600 text-[11px]">${tx.lot_number || '-'}</td>
+                    <td class="py-3 px-4 text-slate-700">${tx.company_name || '-'}</td>
+                    <td class="py-3 px-4 text-slate-600">${tx.worker || '-'}</td>
+                    <td class="py-3 px-4 text-slate-500 text-[11px] max-w-xs truncate" title="${tx.note}">${tx.note || '-'}</td>
+                    <td class="py-3 px-4 text-center">
+                        <div class="flex items-center justify-center space-x-1">
+                            <button onclick="openEditTxModal(${tx.id})" class="p-1 text-slate-600 hover:text-teal-600 rounded" title="수정">
+                                <i class="fa-solid fa-pen text-xs"></i>
+                            </button>
+                            <button onclick="cancelTransaction(${tx.id})" class="p-1 text-slate-400 hover:text-rose-600 rounded" title="거래 취소 및 재고 롤백">
+                                <i class="fa-solid fa-trash-can text-xs"></i>
+                            </button>
+                        </div>
+                    </td>
+                </tr>
+            `;
+        });
+        tableBody.innerHTML = html;
+
+    } catch (err) {
+        console.error('loadTransactions error:', err);
     }
-
-    renderTransactionsTable(txs);
-}
-
-function renderTransactionsTable(txs) {
-    const tableBody = document.getElementById('tx-table-body');
-    if (!tableBody) return;
-
-    document.getElementById('tx-count').innerText = txs.length.toLocaleString();
-
-    if (txs.length === 0) {
-        tableBody.innerHTML = `<tr><td colspan="13" class="py-12 text-center text-slate-400">조회된 입출고 이력이 없습니다.</td></tr>`;
-        return;
-    }
-
-    let html = '';
-    txs.forEach(tx => {
-        const isIn = tx.tx_type === 'in';
-        const isPart = tx.item_type === 'part';
-
-        html += `
-            <tr class="hover:bg-slate-50/80 transition-colors">
-                <td class="py-3 px-4 text-slate-500 font-mono text-[11px]">${tx.timestamp}</td>
-                <td class="py-3 px-4">
-                    <span class="px-2 py-0.5 rounded text-[10px] font-bold ${isIn ? 'bg-sky-50 text-sky-700 border border-sky-200' : 'bg-rose-50 text-rose-700 border border-rose-200'}">
-                        ${isIn ? '입고' : '출고'}
-                    </span>
-                </td>
-                <td class="py-3 px-4 font-medium text-slate-700">${tx.sub_type || '-'}</td>
-                <td class="py-3 px-4 font-mono text-teal-700 font-semibold">${tx.item_code || ''}</td>
-                <td class="py-3 px-4 font-bold text-slate-900">${tx.item_name}</td>
-                <td class="py-3 px-4">
-                    <span class="px-1.5 py-0.5 rounded text-[10px] font-semibold ${isPart ? 'bg-indigo-50 text-indigo-600' : 'bg-emerald-50 text-emerald-600'}">
-                        ${isPart ? '부품' : '완제품'}
-                    </span>
-                </td>
-                <td class="py-3 px-4 text-slate-500">${tx.item_spec || '-'}</td>
-                <td class="py-3 px-4 text-right font-extrabold ${isIn ? 'text-sky-700' : 'text-rose-700'}">
-                    ${isIn ? '+' : '-'}${(tx.quantity || 0).toLocaleString()} ${tx.unit || 'EA'}
-                </td>
-                <td class="py-3 px-4 font-mono text-slate-600 text-[11px]">${tx.lot_number || '-'}</td>
-                <td class="py-3 px-4 text-slate-700">${tx.company_name || '-'}</td>
-                <td class="py-3 px-4 text-slate-600">${tx.worker || '-'}</td>
-                <td class="py-3 px-4 text-slate-500 text-[11px] max-w-xs truncate" title="${tx.note}">${tx.note || '-'}</td>
-                <td class="py-3 px-4 text-center">
-                    <div class="flex items-center justify-center space-x-1">
-                        <button onclick="openEditTxModal('${tx.id}')" class="p-1 text-slate-600 hover:text-teal-600 rounded" title="수정">
-                            <i class="fa-solid fa-pen text-xs"></i>
-                        </button>
-                        <button onclick="cancelTransaction('${tx.id}')" class="p-1 text-slate-400 hover:text-rose-600 rounded" title="거래 취소 및 재고 롤백">
-                            <i class="fa-solid fa-trash-can text-xs"></i>
-                        </button>
-                    </div>
-                </td>
-            </tr>
-        `;
-    });
-    tableBody.innerHTML = html;
 }
 
 function setTxDateRange(preset) {
@@ -1414,7 +972,7 @@ function handleTxSearch(e) {
 }
 
 function openEditTxModal(txId) {
-    const tx = cachedTransactions.find(t => String(t.id) === String(txId));
+    const tx = cachedTransactions.find(t => t.id === txId);
     if (!tx) return;
 
     document.getElementById('editTxId').value = tx.id;
@@ -1430,11 +988,8 @@ function openEditTxModal(txId) {
 async function submitEditTxForm(e) {
     e.preventDefault();
     const txId = document.getElementById('editTxId').value;
-    const tx = cachedTransactions.find(t => String(t.id) === String(txId));
-    const newQty = parseInt(document.getElementById('editTxQuantity').value);
-
-    const updateData = {
-        quantity: newQty,
+    const data = {
+        quantity: parseInt(document.getElementById('editTxQuantity').value),
         lot_number: document.getElementById('editTxLot').value.trim(),
         company_name: document.getElementById('editTxCompany').value.trim(),
         worker: document.getElementById('editTxWorker').value.trim(),
@@ -1442,24 +997,14 @@ async function submitEditTxForm(e) {
     };
 
     try {
-        if (isFirebaseConfigured && cloudDb) {
-            const delta = newQty - (tx.quantity || 0);
-            const item = cachedItems.find(i => String(i.id) === String(tx.item_id));
-            if (item) {
-                const newStock = tx.tx_type === 'in' ? item.current_stock + delta : item.current_stock - delta;
-                await cloudDb.collection('items').doc(String(item.id)).update({ current_stock: newStock });
-            }
-            await cloudDb.collection('transactions').doc(String(txId)).update(updateData);
-        } else {
-            const res = await fetch(`/api/transactions/${txId}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(updateData)
-            });
-            if (!res.ok) {
-                const err = await res.json();
-                throw new Error(err.detail || '수정에 실패했습니다.');
-            }
+        const res = await fetch(`/api/transactions/${txId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+        if (!res.ok) {
+            const err = await res.json();
+            throw new Error(err.detail || '수정에 실패했습니다.');
         }
 
         closeModal('editTxModal');
@@ -1471,9 +1016,6 @@ async function submitEditTxForm(e) {
 }
 
 async function cancelTransaction(txId) {
-    const tx = cachedTransactions.find(t => String(t.id) === String(txId));
-    if (!tx) return;
-
     const result = await Swal.fire({
         title: '거래 이력 취소 확인',
         text: '해당 거래를 취소하면 재고가 거래 이전 상태로 자동 복원됩니다. 계속하시겠습니까?',
@@ -1487,19 +1029,10 @@ async function cancelTransaction(txId) {
 
     if (result.isConfirmed) {
         try {
-            if (isFirebaseConfigured && cloudDb) {
-                const item = cachedItems.find(i => String(i.id) === String(tx.item_id));
-                if (item) {
-                    const newStock = tx.tx_type === 'in' ? item.current_stock - tx.quantity : item.current_stock + tx.quantity;
-                    await cloudDb.collection('items').doc(String(item.id)).update({ current_stock: newStock });
-                }
-                await cloudDb.collection('transactions').doc(String(txId)).delete();
-            } else {
-                const res = await fetch(`/api/transactions/${txId}`, { method: 'DELETE' });
-                if (!res.ok) {
-                    const err = await res.json();
-                    throw new Error(err.detail || '거래 취소에 실패했습니다.');
-                }
+            const res = await fetch(`/api/transactions/${txId}`, { method: 'DELETE' });
+            if (!res.ok) {
+                const err = await res.json();
+                throw new Error(err.detail || '거래 취소에 실패했습니다.');
             }
             Swal.fire('취소 완료', '거래가 취소되고 재고가 정상 복원되었습니다.', 'success');
             loadTransactions();
@@ -1516,16 +1049,22 @@ async function cancelTransaction(txId) {
 let allProductsList = [];
 
 async function loadProductionTab() {
-    allProductsList = (cachedItems || []).filter(i => i.item_type === 'product');
-    const countEl = document.getElementById('bom-product-count');
-    if (countEl) countEl.innerText = `총 ${allProductsList.length}개`;
+    try {
+        const res = await fetch('/api/items?item_type=product');
+        allProductsList = await res.json();
 
-    renderBOMProductList(allProductsList);
+        const countEl = document.getElementById('bom-product-count');
+        if (countEl) countEl.innerText = `총 ${allProductsList.length}개`;
 
-    if (allProductsList.length > 0 && !selectedBOMProductId) {
-        selectProductForBOM(allProductsList[0].id);
-    } else if (selectedBOMProductId) {
-        selectProductForBOM(selectedBOMProductId);
+        renderBOMProductList(allProductsList);
+
+        if (allProductsList.length > 0 && !selectedBOMProductId) {
+            selectProductForBOM(allProductsList[0].id);
+        } else if (selectedBOMProductId) {
+            selectProductForBOM(selectedBOMProductId);
+        }
+    } catch (err) {
+        console.error('loadProductionTab error:', err);
     }
 }
 
@@ -1540,9 +1079,9 @@ function renderBOMProductList(products) {
 
     let html = '';
     products.forEach(p => {
-        const isSelected = String(p.id) === String(selectedBOMProductId);
+        const isSelected = p.id === selectedBOMProductId;
         html += `
-            <button onclick="selectProductForBOM('${p.id}')" class="w-full text-left p-3 rounded-xl border transition-all ${isSelected ? 'bg-teal-50/80 border-teal-500 shadow-xs' : 'bg-white border-slate-200/80 hover:bg-slate-50'}">
+            <button onclick="selectProductForBOM(${p.id})" class="w-full text-left p-3 rounded-xl border transition-all ${isSelected ? 'bg-teal-50/80 border-teal-500 shadow-xs' : 'bg-white border-slate-200/80 hover:bg-slate-50'}">
                 <div class="flex items-center justify-between mb-1">
                     <span class="text-[11px] font-bold font-mono text-teal-700">${p.item_code}</span>
                     <span class="text-[11px] text-slate-500 font-semibold">재고: ${p.current_stock} ${p.unit}</span>
@@ -1565,72 +1104,54 @@ async function selectProductForBOM(productId) {
     selectedBOMProductId = productId;
     renderBOMProductList(allProductsList);
 
-    const item = cachedItems.find(i => String(i.id) === String(productId));
-    if (!item) return;
+    try {
+        const res = await fetch(`/api/items/${productId}`);
+        const item = await res.json();
 
-    document.getElementById('bom-detail-code').innerText = item.item_code;
-    document.getElementById('bom-detail-name').innerText = item.name;
-    document.getElementById('bom-detail-spec').innerText = `규격: ${item.spec || '-'} | 적재위치: ${item.location || '-'} | 현재고: ${item.current_stock} ${item.unit}`;
+        document.getElementById('bom-detail-code').innerText = item.item_code;
+        document.getElementById('bom-detail-name').innerText = item.name;
+        document.getElementById('bom-detail-spec').innerText = `규격: ${item.spec || '-'} | 적재위치: ${item.location || '-'} | 현재고: ${item.current_stock} ${item.unit}`;
 
-    // Fetch BOM
-    let bomList = [];
-    if (isFirebaseConfigured && cloudDb) {
-        const snap = await cloudDb.collection('bom_items').where('product_id', '==', String(productId)).get();
-        snap.forEach(doc => {
-            const b = doc.data();
-            const part = cachedItems.find(p => String(p.id) === String(b.part_id));
-            if (part) {
-                bomList.push({
-                    id: doc.id,
-                    part_id: part.id,
-                    part_code: part.item_code,
-                    part_name: part.name,
-                    spec: part.spec,
-                    unit: part.unit,
-                    current_stock: part.current_stock,
-                    quantity_required: b.quantity_required
-                });
-            }
+        // Fetch BOM
+        const bomRes = await fetch(`/api/bom/${productId}`);
+        const bomList = await bomRes.json();
+        currentBOMData = bomList;
+
+        const tableBody = document.getElementById('bom-parts-table-body');
+        if (bomList.length === 0) {
+            tableBody.innerHTML = `
+                <tr>
+                    <td colspan="6" class="py-10 text-center text-slate-400 text-xs">
+                        <i class="fa-solid fa-layer-group text-slate-300 text-2xl mb-2 block"></i>
+                        설정된 부품 소요량(BOM)이 없습니다.<br>
+                        <button onclick="openEditBOMModal()" class="mt-2 text-brand-600 hover:underline font-bold">+ BOM 부품 구성 설정하기</button>
+                    </td>
+                </tr>
+            `;
+            return;
+        }
+
+        let html = '';
+        bomList.forEach(b => {
+            const hasStock = b.current_stock >= b.quantity_required;
+            html += `
+                <tr class="hover:bg-slate-50/80 transition-colors">
+                    <td class="py-2.5 px-3 font-mono font-semibold text-indigo-700">${b.part_code}</td>
+                    <td class="py-2.5 px-3 font-bold text-slate-800">${b.part_name}</td>
+                    <td class="py-2.5 px-3 text-slate-500">${b.spec}</td>
+                    <td class="py-2.5 px-3 text-right font-extrabold text-teal-700">${b.quantity_required} ${b.unit}</td>
+                    <td class="py-2.5 px-3 text-right font-semibold ${hasStock ? 'text-slate-800' : 'text-rose-600'}">${b.current_stock} ${b.unit}</td>
+                    <td class="py-2.5 px-3 text-center">
+                        ${hasStock ? '<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-700">충족</span>' : '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-700">부족</span>'}
+                    </td>
+                </tr>
+            `;
         });
-    } else {
-        try {
-            const bomRes = await fetch(`/api/bom/${productId}`);
-            bomList = await bomRes.json();
-        } catch (e) { }
-    }
+        tableBody.innerHTML = html;
 
-    currentBOMData = bomList;
-    const tableBody = document.getElementById('bom-parts-table-body');
-    if (bomList.length === 0) {
-        tableBody.innerHTML = `
-            <tr>
-                <td colspan="6" class="py-10 text-center text-slate-400 text-xs">
-                    <i class="fa-solid fa-layer-group text-slate-300 text-2xl mb-2 block"></i>
-                    설정된 부품 소요량(BOM)이 없습니다.<br>
-                    <button onclick="openEditBOMModal()" class="mt-2 text-brand-600 hover:underline font-bold">+ BOM 부품 구성 설정하기</button>
-                </td>
-            </tr>
-        `;
-        return;
+    } catch (err) {
+        console.error('selectProductForBOM error:', err);
     }
-
-    let html = '';
-    bomList.forEach(b => {
-        const hasStock = b.current_stock >= b.quantity_required;
-        html += `
-            <tr class="hover:bg-slate-50/80 transition-colors">
-                <td class="py-2.5 px-3 font-mono font-semibold text-indigo-700">${b.part_code}</td>
-                <td class="py-2.5 px-3 font-bold text-slate-800">${b.part_name}</td>
-                <td class="py-2.5 px-3 text-slate-500">${b.spec}</td>
-                <td class="py-2.5 px-3 text-right font-extrabold text-teal-700">${b.quantity_required} ${b.unit}</td>
-                <td class="py-2.5 px-3 text-right font-semibold ${hasStock ? 'text-slate-800' : 'text-rose-600'}">${b.current_stock} ${b.unit}</td>
-                <td class="py-2.5 px-3 text-center">
-                    ${hasStock ? '<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-700">충족</span>' : '<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-700">부족</span>'}
-                </td>
-            </tr>
-        `;
-    });
-    tableBody.innerHTML = html;
 }
 
 // Production Modal & Execution
@@ -1666,137 +1187,79 @@ async function calculateProductionRequirements() {
         return;
     }
 
-    let bomList = [];
-    if (isFirebaseConfigured && cloudDb) {
-        const snap = await cloudDb.collection('bom_items').where('product_id', '==', String(productId)).get();
-        snap.forEach(doc => {
-            const b = doc.data();
-            const part = cachedItems.find(p => String(p.id) === String(b.part_id));
-            if (part) bomList.push({ ...b, part_name: part.name, spec: part.spec, unit: part.unit, current_stock: part.current_stock });
-        });
-    } else {
+    try {
         const res = await fetch(`/api/bom/${productId}`);
-        bomList = await res.json();
-    }
+        const bomList = await res.json();
 
-    if (bomList.length === 0) {
-        previewContainer.innerHTML = '<p class="text-rose-500 text-center py-2">이 완제품에 설정된 BOM(부품 소요량)이 없습니다.</p>';
-        badge.className = 'px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-100 text-rose-700';
-        badge.innerText = 'BOM 없음';
-        return;
-    }
+        if (bomList.length === 0) {
+            previewContainer.innerHTML = '<p class="text-rose-500 text-center py-2">이 완제품에 설정된 BOM(부품 소요량)이 없습니다.</p>';
+            badge.className = 'px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-100 text-rose-700';
+            badge.innerText = 'BOM 없음';
+            return;
+        }
 
-    let allSufficient = true;
-    let html = '';
+        let allSufficient = true;
+        let html = '';
 
-    bomList.forEach(b => {
-        const needed = b.quantity_required * qty;
-        const isOk = b.current_stock >= needed;
-        if (!isOk) allSufficient = false;
+        bomList.forEach(b => {
+            const needed = b.quantity_required * qty;
+            const isOk = b.current_stock >= needed;
+            if (!isOk) allSufficient = false;
 
-        html += `
-            <div class="flex items-center justify-between py-1 border-b border-slate-200/60 last:border-0">
-                <span class="text-slate-800 font-medium">${b.part_name} (${b.spec})</span>
-                <div class="text-right">
-                    <span class="text-slate-500">필요: <b>${needed}</b> ${b.unit}</span>
-                    <span class="ml-2 ${isOk ? 'text-emerald-600' : 'text-rose-600 font-bold'}">
-                        (현재: ${b.current_stock} ${b.unit})
-                    </span>
+            html += `
+                <div class="flex items-center justify-between py-1 border-b border-slate-200/60 last:border-0">
+                    <span class="text-slate-800 font-medium">${b.part_name} (${b.spec})</span>
+                    <div class="text-right">
+                        <span class="text-slate-500">필요: <b>${needed}</b> ${b.unit}</span>
+                        <span class="ml-2 ${isOk ? 'text-emerald-600' : 'text-rose-600 font-bold'}">
+                            (현재: ${b.current_stock} ${b.unit})
+                        </span>
+                    </div>
                 </div>
-            </div>
-        `;
-    });
+            `;
+        });
 
-    previewContainer.innerHTML = html;
+        previewContainer.innerHTML = html;
 
-    if (allSufficient) {
-        badge.className = 'px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-700';
-        badge.innerText = '재고 충족 (생산 가능)';
-        submitBtn.disabled = false;
-    } else {
-        badge.className = 'px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-700 animate-pulse';
-        badge.innerText = '부품 재고 부족!';
+        if (allSufficient) {
+            badge.className = 'px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-700';
+            badge.innerText = '재고 충족 (생산 가능)';
+            submitBtn.disabled = false;
+        } else {
+            badge.className = 'px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-700 animate-pulse';
+            badge.innerText = '부품 재고 부족!';
+        }
+    } catch (err) {
+        console.error('calculateProductionRequirements error:', err);
     }
 }
 
 async function submitProductionForm(e) {
     e.preventDefault();
-    const productId = document.getElementById('prodModalProductId').value;
+    const productId = parseInt(document.getElementById('prodModalProductId').value);
     const qty = parseInt(document.getElementById('prodModalQuantity').value);
-    const lot = document.getElementById('prodModalLot').value.trim() || `LOT-${new Date().toISOString().replace(/\D/g, '').slice(0, 12)}`;
-    const worker = document.getElementById('prodModalWorker').value.trim() || '생산팀';
+    const lot = document.getElementById('prodModalLot').value.trim();
+    const worker = document.getElementById('prodModalWorker').value.trim();
     const note = document.getElementById('prodModalNote').value.trim();
 
     if (!productId || qty <= 0) return;
 
     try {
-        if (isFirebaseConfigured && cloudDb) {
-            const product = cachedItems.find(i => String(i.id) === String(productId));
-            const snap = await cloudDb.collection('bom_items').where('product_id', '==', String(productId)).get();
-            const bomList = [];
-            snap.forEach(d => bomList.push(d.data()));
-
-            if (bomList.length === 0) throw new Error('BOM 구성이 없습니다.');
-
-            const nowStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
-
-            // Deduct parts
-            for (const b of bomList) {
-                const part = cachedItems.find(p => String(p.id) === String(b.part_id));
-                const totalNeeded = b.quantity_required * qty;
-                await cloudDb.collection('items').doc(String(part.id)).update({ current_stock: part.current_stock - totalNeeded });
-                await cloudDb.collection('transactions').add({
-                    item_id: part.id,
-                    item_code: part.item_code,
-                    item_name: part.name,
-                    item_type: 'part',
-                    item_spec: part.spec || '-',
-                    unit: part.unit || 'EA',
-                    tx_type: 'out',
-                    sub_type: '생산투입출고',
-                    quantity: totalNeeded,
-                    worker: worker,
-                    lot_number: lot,
-                    company_name: '사내생산라인',
-                    timestamp: nowStr,
-                    note: `[${product.name}] ${qty}개 생산 투입 소모`
-                });
-            }
-
-            // Add product
-            await cloudDb.collection('items').doc(String(productId)).update({ current_stock: product.current_stock + qty });
-            await cloudDb.collection('transactions').add({
-                item_id: product.id,
-                item_code: product.item_code,
-                item_name: product.name,
-                item_type: 'product',
-                item_spec: product.spec || '-',
-                unit: product.unit || 'EA',
-                tx_type: 'in',
-                sub_type: '생산완료입고',
+        const res = await fetch('/api/production', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                product_id: productId,
                 quantity: qty,
-                worker: worker,
                 lot_number: lot,
-                company_name: '사내생산라인',
-                timestamp: nowStr,
-                note: note || `완제품 ${qty}개 생산 완료`
-            });
+                worker: worker,
+                note: note
+            })
+        });
 
-        } else {
-            const res = await fetch('/api/production', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    product_id: parseInt(productId),
-                    quantity: qty,
-                    lot_number: lot,
-                    worker: worker,
-                    note: note
-                })
-            });
-
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.detail || '생산 처리에 실패했습니다.');
+        const data = await res.json();
+        if (!res.ok) {
+            throw new Error(data.detail || '생산 처리에 실패했습니다.');
         }
 
         closeModal('productionModal');
@@ -1805,10 +1268,11 @@ async function submitProductionForm(e) {
             title: '생산 작업 완료!',
             html: `
                 <div class="text-left text-xs space-y-2 mt-2">
-                    <p class="text-sm font-bold text-slate-800">완제품 ${qty}개 생산 입고 및 소요 부품 차감이 완료되었습니다.</p>
+                    <p class="text-sm font-bold text-slate-800">${data.message}</p>
                     <div class="p-3 bg-slate-100 rounded-xl font-mono">
-                        발급된 LOT: <strong class="text-teal-700">${lot}</strong>
+                        발급된 LOT: <strong class="text-teal-700">${data.lot_number}</strong>
                     </div>
+                    <p class="text-slate-500">소요된 모든 부품이 자동 출고 차감되었으며, 완제품 재고가 정상 증가하였습니다.</p>
                 </div>
             `,
             confirmButtonColor: '#0d9488'
@@ -1825,7 +1289,7 @@ async function openEditBOMModal() {
     if (!selectedBOMProductId) return;
 
     document.getElementById('editBomProductId').value = selectedBOMProductId;
-    const prod = allProductsList.find(p => String(p.id) === String(selectedBOMProductId));
+    const prod = allProductsList.find(p => p.id === selectedBOMProductId);
     if (prod) {
         document.getElementById('editBomModalSubtitle').innerText = `[${prod.name}] 1개 생산 시 소요되는 부품을 구성하세요.`;
     }
@@ -1833,17 +1297,23 @@ async function openEditBOMModal() {
     const container = document.getElementById('editBomRowsContainer');
     container.innerHTML = '';
 
-    const allParts = (cachedItems || []).filter(i => i.item_type === 'part');
-    window._cachedPartsForBOM = allParts;
+    // Fetch all parts
+    const partsRes = await fetch('/api/items?item_type=part');
+    const allParts = await partsRes.json();
 
-    if (currentBOMData.length === 0) {
+    // Fetch current BOM
+    const bomRes = await fetch(`/api/bom/${selectedBOMProductId}`);
+    const currentBOM = await bomRes.json();
+
+    if (currentBOM.length === 0) {
         addBOMRow(allParts);
     } else {
-        currentBOMData.forEach(b => {
+        currentBOM.forEach(b => {
             addBOMRow(allParts, b.part_id, b.quantity_required);
         });
     }
 
+    window._cachedPartsForBOM = allParts;
     openModal('editBomModal');
 }
 
@@ -1859,7 +1329,7 @@ function addBOMRow(parts = null, selectedPartId = null, qty = 1) {
     div.innerHTML = `
         <select class="bom-part-select flex-1 px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-xs">
             <option value="">부품을 선택하세요</option>
-            ${allParts.map(p => `<option value="${p.id}" ${String(p.id) === String(selectedPartId) ? 'selected' : ''}>[${p.item_code}] ${p.name} (${p.spec || '-'})</option>`).join('')}
+            ${allParts.map(p => `<option value="${p.id}" ${p.id === selectedPartId ? 'selected' : ''}>[${p.item_code}] ${p.name} (${p.spec || '-'})</option>`).join('')}
         </select>
         <div class="flex items-center space-x-1">
             <span class="text-xs text-slate-500 font-medium">소요량:</span>
@@ -1873,12 +1343,12 @@ function addBOMRow(parts = null, selectedPartId = null, qty = 1) {
 }
 
 async function saveBOMConfiguration() {
-    const productId = document.getElementById('editBomProductId').value;
+    const productId = parseInt(document.getElementById('editBomProductId').value);
     const rows = document.querySelectorAll('#editBomRowsContainer > div');
     const parts = [];
 
     rows.forEach(r => {
-        const partId = r.querySelector('.bom-part-select').value;
+        const partId = parseInt(r.querySelector('.bom-part-select').value);
         const qty = parseInt(r.querySelector('.bom-part-qty').value);
         if (partId && qty > 0) {
             parts.push({ part_id: partId, quantity_required: qty });
@@ -1886,29 +1356,12 @@ async function saveBOMConfiguration() {
     });
 
     try {
-        if (isFirebaseConfigured && cloudDb) {
-            // Delete old BOM
-            const snap = await cloudDb.collection('bom_items').where('product_id', '==', String(productId)).get();
-            const batch = cloudDb.batch();
-            snap.forEach(d => batch.delete(d.ref));
-            await batch.commit();
-
-            // Add new BOM
-            for (const p of parts) {
-                await cloudDb.collection('bom_items').add({
-                    product_id: String(productId),
-                    part_id: String(p.part_id),
-                    quantity_required: p.quantity_required
-                });
-            }
-        } else {
-            const res = await fetch('/api/bom', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ product_id: parseInt(productId), parts: parts })
-            });
-            if (!res.ok) throw new Error('BOM 저장에 실패했습니다.');
-        }
+        const res = await fetch('/api/bom', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ product_id: productId, parts: parts })
+        });
+        if (!res.ok) throw new Error('BOM 저장에 실패했습니다.');
 
         closeModal('editBomModal');
         Swal.fire('저장 완료', 'BOM 부품 구성이 성공적으로 등록되었습니다.', 'success');
@@ -1924,72 +1377,40 @@ async function saveBOMConfiguration() {
 
 async function loadMonthlyStats() {
     const year = parseInt(document.getElementById('monthly-year-select')?.value) || 2026;
-    let stats = [];
+    try {
+        const res = await fetch(`/api/statistics/monthly?year=${year}`);
+        const stats = await res.json();
+        const tableBody = document.getElementById('monthly-table-body');
 
-    if (isFirebaseConfigured && cloudDb) {
-        const statsMap = {};
-        cachedTransactions.forEach(tx => {
-            if (!tx.timestamp || !tx.timestamp.startsWith(String(year))) return;
-            const month = tx.timestamp.substring(0, 7);
-            const key = `${month}_${tx.item_id}`;
-            const item = cachedItems.find(i => String(i.id) === String(tx.item_id)) || {};
-
-            if (!statsMap[key]) {
-                statsMap[key] = {
-                    month,
-                    item_code: tx.item_code || item.item_code || `ITM-${tx.item_id}`,
-                    item_name: tx.item_name || item.name || '',
-                    item_type: tx.item_type || item.item_type || 'part',
-                    spec: tx.item_spec || item.spec || '-',
-                    unit: tx.unit || item.unit || 'EA',
-                    total_in: 0,
-                    total_out: 0,
-                    current_stock: item.current_stock || 0
-                };
-            }
-            if (tx.tx_type === 'in') statsMap[key].total_in += (tx.quantity || 0);
-            else statsMap[key].total_out += (tx.quantity || 0);
-        });
-        stats = Object.values(statsMap);
-        stats.sort((a, b) => b.month.localeCompare(a.month) || a.item_name.localeCompare(b.item_name));
-    } else {
-        try {
-            const res = await fetch(`/api/statistics/monthly?year=${year}`);
-            stats = await res.json();
-        } catch (err) {
-            console.error('loadMonthlyStats error:', err);
+        if (stats.length === 0) {
+            tableBody.innerHTML = `<tr><td colspan="8" class="py-12 text-center text-slate-400">해당 연도의 집계 데이터가 없습니다.</td></tr>`;
+            return;
         }
+
+        let html = '';
+        stats.forEach(s => {
+            const isPart = s.item_type === 'part';
+            html += `
+                <tr class="hover:bg-slate-50/80 transition-colors">
+                    <td class="py-3 px-4 font-mono font-bold text-slate-800">${s.month}</td>
+                    <td class="py-3 px-4 font-mono text-teal-700 font-semibold">${s.item_code}</td>
+                    <td class="py-3 px-4 font-bold text-slate-900">${s.item_name}</td>
+                    <td class="py-3 px-4">
+                        <span class="px-2 py-0.5 rounded text-[10px] font-semibold ${isPart ? 'bg-indigo-50 text-indigo-700' : 'bg-emerald-50 text-emerald-700'}">
+                            ${isPart ? '부품' : '완제품'}
+                        </span>
+                    </td>
+                    <td class="py-3 px-4 text-slate-500">${s.spec || '-'}</td>
+                    <td class="py-3 px-4 text-right font-extrabold text-sky-700">+${s.total_in.toLocaleString()} ${s.unit}</td>
+                    <td class="py-3 px-4 text-right font-extrabold text-rose-700">-${s.total_out.toLocaleString()} ${s.unit}</td>
+                    <td class="py-3 px-4 text-right font-bold text-slate-900">${s.current_stock.toLocaleString()} ${s.unit}</td>
+                </tr>
+            `;
+        });
+        tableBody.innerHTML = html;
+    } catch (err) {
+        console.error('loadMonthlyStats error:', err);
     }
-
-    const tableBody = document.getElementById('monthly-table-body');
-    if (!tableBody) return;
-
-    if (stats.length === 0) {
-        tableBody.innerHTML = `<tr><td colspan="8" class="py-12 text-center text-slate-400">해당 연도의 집계 데이터가 없습니다.</td></tr>`;
-        return;
-    }
-
-    let html = '';
-    stats.forEach(s => {
-        const isPart = s.item_type === 'part';
-        html += `
-            <tr class="hover:bg-slate-50/80 transition-colors">
-                <td class="py-3 px-4 font-mono font-bold text-slate-800">${s.month}</td>
-                <td class="py-3 px-4 font-mono text-teal-700 font-semibold">${s.item_code}</td>
-                <td class="py-3 px-4 font-bold text-slate-900">${s.item_name}</td>
-                <td class="py-3 px-4">
-                    <span class="px-2 py-0.5 rounded text-[10px] font-semibold ${isPart ? 'bg-indigo-50 text-indigo-700' : 'bg-emerald-50 text-emerald-700'}">
-                        ${isPart ? '부품' : '완제품'}
-                    </span>
-                </td>
-                <td class="py-3 px-4 text-slate-500">${s.spec || '-'}</td>
-                <td class="py-3 px-4 text-right font-extrabold text-sky-700">+${(s.total_in || 0).toLocaleString()} ${s.unit}</td>
-                <td class="py-3 px-4 text-right font-extrabold text-rose-700">-${(s.total_out || 0).toLocaleString()} ${s.unit}</td>
-                <td class="py-3 px-4 text-right font-bold text-slate-900">${(s.current_stock || 0).toLocaleString()} ${s.unit}</td>
-            </tr>
-        `;
-    });
-    tableBody.innerHTML = html;
 }
 
 // ==============================================================================
@@ -1998,11 +1419,8 @@ async function loadMonthlyStats() {
 
 async function printItemLabel(itemId) {
     try {
-        let item = cachedItems.find(i => String(i.id) === String(itemId));
-        if (!item && !isFirebaseConfigured) {
-            const res = await fetch(`/api/items/${itemId}`);
-            item = await res.json();
-        }
+        const res = await fetch(`/api/items/${itemId}`);
+        const item = await res.json();
 
         document.getElementById('label-type-badge').innerText = item.item_type === 'product' ? '완제품' : '생산부품';
         document.getElementById('label-location').innerText = item.location ? `위치: ${item.location}` : '';
@@ -2120,13 +1538,15 @@ async function handleScannedBarcode(barcodeText) {
         if (obj.code) searchCode = obj.code;
     } catch (e) { }
 
-    const item = (cachedItems || []).find(i => i.item_code === searchCode || (i.name && i.name.includes(searchCode)));
+    const res = await fetch(`/api/items?search=${encodeURIComponent(searchCode)}`);
+    const items = await res.json();
 
-    if (!item) {
+    if (items.length === 0) {
         Swal.fire('품목 미발견', `스캔된 코드 [${searchCode}]에 해당하는 품목이 없습니다.`, 'warning');
         return;
     }
 
+    const item = items[0];
     const { value: action } = await Swal.fire({
         title: `[${item.item_code}] ${item.name}`,
         html: `규격: <b>${item.spec || '-'}</b> | 현재고: <strong class="text-teal-700 font-bold">${item.current_stock} ${item.unit}</strong><br>원하시는 작업을 선택하세요.`,
@@ -2156,21 +1576,15 @@ async function handleScannedBarcode(barcodeText) {
 
 async function openNetworkModal() {
     try {
-        let url = window.location.origin;
-        if (isFirebaseConfigured && firebaseConfig.projectId) {
-            url = `https://${firebaseConfig.projectId}.web.app`;
-        } else {
-            const res = await fetch('/api/system/network-info');
-            const net = await res.json();
-            url = net.url;
-        }
+        const res = await fetch('/api/system/network-info');
+        const net = await res.json();
 
-        document.getElementById('network-url-display').innerText = url;
+        document.getElementById('network-url-display').innerText = net.url;
         const qrContainer = document.getElementById('network-qrcode');
         qrContainer.innerHTML = '';
 
         new QRCode(qrContainer, {
-            text: url,
+            text: net.url,
             width: 140,
             height: 140,
             colorDark: '#0f172a',
@@ -2255,34 +1669,23 @@ async function processExcelUpload() {
                 throw new Error('등록할 품목 데이터가 없습니다.');
             }
 
-            if (isFirebaseConfigured && cloudDb) {
-                const batch = cloudDb.batch();
-                itemsToCreate.forEach((item, idx) => {
-                    const newId = Date.now() + idx;
-                    const prefix = item.item_type === 'product' ? 'PRD' : 'PRT';
-                    item.id = newId;
-                    item.item_code = `${prefix}-${String(newId).slice(-4)}`;
-                    const ref = cloudDb.collection('items').doc(String(newId));
-                    batch.set(ref, item);
-                });
-                await batch.commit();
-            } else {
-                const res = await fetch('/api/items/bulk', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(itemsToCreate)
-                });
-                await res.json();
-            }
+            const res = await fetch('/api/items/bulk', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(itemsToCreate)
+            });
+            const result = await res.json();
 
             closeModal('excelImportModal');
             Swal.fire({
                 icon: 'success',
                 title: '일괄 등록 완료',
-                text: `총 ${itemsToCreate.length}개 품목이 성공적으로 등록되었습니다.`
+                text: `총 ${result.total}개 중 ${result.success}개 품목이 성공적으로 등록되었습니다.`
             });
 
             loadItems();
+            preloadItemOptions();
+
         } catch (err) {
             Swal.fire('엑셀 처리 오류', err.message, 'error');
         }
@@ -2300,8 +1703,15 @@ async function downloadAllDataExcel() {
             didOpen: () => Swal.showLoading()
         });
 
-        const items = cachedItems || [];
-        const txs = cachedTransactions || [];
+        const [itemsRes, txRes, monthlyRes] = await Promise.all([
+            fetch('/api/items'),
+            fetch('/api/transactions?limit=2000'),
+            fetch('/api/statistics/monthly')
+        ]);
+
+        const items = await itemsRes.json();
+        const txs = await txRes.json();
+        const monthly = await monthlyRes.json();
 
         const wb = XLSX.utils.book_new();
 
@@ -2351,6 +1761,26 @@ async function downloadAllDataExcel() {
         const wsTx = XLSX.utils.aoa_to_sheet(txData);
         XLSX.utils.book_append_sheet(wb, wsTx, "입출고수불부");
 
+        // 3. Monthly Sheet
+        const monthlyData = [
+            ["기준월", "품목코드", "품명", "구분", "규격", "월간총입고", "월간총출고", "현재고", "단위"]
+        ];
+        monthly.forEach(m => {
+            monthlyData.push([
+                m.month,
+                m.item_code,
+                m.item_name,
+                m.item_type === 'product' ? '완제품' : '생산부품',
+                m.spec,
+                m.total_in,
+                m.total_out,
+                m.current_stock,
+                m.unit
+            ]);
+        });
+        const wsMonthly = XLSX.utils.aoa_to_sheet(monthlyData);
+        XLSX.utils.book_append_sheet(wb, wsMonthly, "월별집계");
+
         const todayStr = new Date().toISOString().split('T')[0];
         XLSX.writeFile(wb, `스마트재고관리_데이터백업_${todayStr}.xlsx`);
         Swal.close();
@@ -2364,7 +1794,7 @@ function exportItemsExcel() {
     const itemsData = [
         ["품목코드", "구분", "카테고리", "품명", "규격/사양", "단위", "적재위치", "단가(원)", "현재고", "안전재고", "비고"]
     ];
-    (cachedItems || []).forEach(i => {
+    cachedItems.forEach(i => {
         itemsData.push([
             i.item_code,
             i.item_type === 'product' ? '완제품' : '생산부품',
@@ -2389,7 +1819,7 @@ function exportTransactionsExcel() {
     const txData = [
         ["일시", "거래구분", "세부유형", "품목코드", "품명", "구분", "규격", "수량", "단위", "LOT번호", "거래처/출하처", "담당자", "비고"]
     ];
-    (cachedTransactions || []).forEach(t => {
+    cachedTransactions.forEach(t => {
         txData.push([
             t.timestamp,
             t.tx_type === 'in' ? '입고' : '출고',
