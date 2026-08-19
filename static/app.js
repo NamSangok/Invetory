@@ -1,6 +1,652 @@
 // ==============================================================================
-// 스마트 생산·재고 관리 시스템 (Frontend Engine)
+// 스마트 생산·재고 관리 시스템 (Universal Hybrid Engine: Backend API + Offline LocalStorage)
 // ==============================================================================
+
+// --- 1. Client Storage Service (Fallback for Netlify & Offline) ---
+const STORAGE_KEY = 'smart_inventory_db';
+
+const storageService = {
+    getData() {
+        try {
+            const raw = localStorage.getItem(STORAGE_KEY);
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                if (parsed && Array.isArray(parsed.items) && parsed.items.length > 0) {
+                    return parsed;
+                }
+            }
+        } catch (e) {
+            console.warn('localStorage load error:', e);
+        }
+
+        // Initialize with default initial dataset
+        const initial = (typeof DEFAULT_INITIAL_DATA !== 'undefined') ? JSON.parse(JSON.stringify(DEFAULT_INITIAL_DATA)) : {
+            items: [],
+            transactions: [],
+            boms: [],
+            notices: []
+        };
+        this.saveData(initial);
+        return initial;
+    },
+
+    saveData(data) {
+        try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+        } catch (e) {
+            console.error('localStorage save error:', e);
+        }
+    },
+
+    getItems(filter = {}) {
+        const data = this.getData();
+        let list = data.items || [];
+
+        if (filter.item_type) {
+            list = list.filter(i => i.item_type === filter.item_type);
+        }
+        if (filter.category) {
+            list = list.filter(i => i.category === filter.category);
+        }
+        if (filter.search) {
+            const q = filter.search.toLowerCase();
+            list = list.filter(i => 
+                (i.name && i.name.toLowerCase().includes(q)) ||
+                (i.item_code && i.item_code.toLowerCase().includes(q)) ||
+                (i.spec && i.spec.toLowerCase().includes(q)) ||
+                (i.location && i.location.toLowerCase().includes(q)) ||
+                (i.note && i.note.toLowerCase().includes(q))
+            );
+        }
+        if (filter.low_stock_only) {
+            list = list.filter(i => i.safety_stock > 0 && i.current_stock < i.safety_stock);
+        }
+
+        return list;
+    },
+
+    getItem(id) {
+        const data = this.getData();
+        return (data.items || []).find(i => i.id == id);
+    },
+
+    saveItem(item) {
+        const data = this.getData();
+        data.items = data.items || [];
+
+        if (item.id) {
+            const idx = data.items.findIndex(i => i.id == item.id);
+            if (idx !== -1) {
+                data.items[idx] = { ...data.items[idx], ...item };
+            }
+        } else {
+            const maxId = data.items.reduce((max, i) => Math.max(max, i.id || 0), 0);
+            item.id = maxId + 1;
+            if (!item.item_code) {
+                const prefix = item.item_type === 'product' ? 'PRD' : 'PRT';
+                item.item_code = `${prefix}-${String(item.id).padStart(4, '0')}`;
+            }
+            item.created_at = new Date().toISOString().replace('T', ' ').substring(0, 19);
+            data.items.push(item);
+        }
+        this.saveData(data);
+        return item;
+    },
+
+    deleteItem(id) {
+        const data = this.getData();
+        data.items = (data.items || []).filter(i => i.id != id);
+        data.transactions = (data.transactions || []).filter(t => t.item_id != id);
+        data.boms = (data.boms || []).filter(b => b.product_id != id && b.part_id != id);
+        this.saveData(data);
+    },
+
+    getTransactions(filter = {}) {
+        const data = this.getData();
+        let list = (data.transactions || []).map(t => {
+            const item = data.items.find(i => i.id == t.item_id) || {};
+            return {
+                ...t,
+                item_code: item.item_code || `ITM-${t.item_id}`,
+                item_name: item.name || '미등록품목',
+                item_type: item.item_type || 'part',
+                item_spec: item.spec || '',
+                unit: item.unit || 'EA'
+            };
+        });
+
+        if (filter.tx_type) list = list.filter(t => t.tx_type === filter.tx_type);
+        if (filter.item_type) list = list.filter(t => t.item_type === filter.item_type);
+        if (filter.start_date) list = list.filter(t => t.timestamp >= filter.start_date);
+        if (filter.end_date) list = list.filter(t => t.timestamp <= filter.end_date + ' 23:59:59');
+        if (filter.search) {
+            const q = filter.search.toLowerCase();
+            list = list.filter(t => 
+                (t.item_name && t.item_name.toLowerCase().includes(q)) ||
+                (t.item_code && t.item_code.toLowerCase().includes(q)) ||
+                (t.lot_number && t.lot_number.toLowerCase().includes(q)) ||
+                (t.company_name && t.company_name.toLowerCase().includes(q)) ||
+                (t.worker && t.worker.toLowerCase().includes(q)) ||
+                (t.note && t.note.toLowerCase().includes(q))
+            );
+        }
+
+        list.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+        return list;
+    },
+
+    addTransaction(tx) {
+        const data = this.getData();
+        data.transactions = data.transactions || [];
+        const item = data.items.find(i => i.id == tx.item_id);
+        if (!item) throw new Error('품목을 찾을 수 없습니다.');
+
+        if (tx.tx_type === 'out' && item.current_stock < tx.quantity) {
+            throw new Error(`출고 수량(${tx.quantity})이 현재고(${item.current_stock})를 초과합니다.`);
+        }
+
+        const maxId = data.transactions.reduce((max, t) => Math.max(max, t.id || 0), 0);
+        tx.id = maxId + 1;
+        tx.timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19);
+
+        // Adjust stock
+        if (tx.tx_type === 'in') {
+            item.current_stock += tx.quantity;
+        } else {
+            item.current_stock -= tx.quantity;
+        }
+
+        data.transactions.unshift(tx);
+        this.saveData(data);
+        return tx;
+    },
+
+    updateTransaction(id, updateData) {
+        const data = this.getData();
+        const tx = (data.transactions || []).find(t => t.id == id);
+        if (!tx) throw new Error('거래 이력을 찾을 수 없습니다.');
+        const item = data.items.find(i => i.id == tx.item_id);
+        if (!item) throw new Error('연결된 품목이 없습니다.');
+
+        const oldQty = tx.quantity;
+        const newQty = updateData.quantity;
+
+        // Rollback old stock & apply new stock
+        if (tx.tx_type === 'in') {
+            item.current_stock = item.current_stock - oldQty + newQty;
+        } else {
+            item.current_stock = item.current_stock + oldQty - newQty;
+            if (item.current_stock < 0) throw new Error('수정 시 재고가 음수가 됩니다.');
+        }
+
+        Object.assign(tx, updateData);
+        this.saveData(data);
+        return tx;
+    },
+
+    deleteTransaction(id) {
+        const data = this.getData();
+        const txIdx = (data.transactions || []).findIndex(t => t.id == id);
+        if (txIdx === -1) throw new Error('이력을 찾을 수 없습니다.');
+        const tx = data.transactions[txIdx];
+        const item = data.items.find(i => i.id == tx.item_id);
+
+        if (item) {
+            // Rollback stock
+            if (tx.tx_type === 'in') {
+                item.current_stock -= tx.quantity;
+            } else {
+                item.current_stock += tx.quantity;
+            }
+        }
+
+        data.transactions.splice(txIdx, 1);
+        this.saveData(data);
+    },
+
+    getBOM(productId) {
+        const data = this.getData();
+        const boms = (data.boms || []).filter(b => b.product_id == productId);
+        return boms.map(b => {
+            const part = data.items.find(i => i.id == b.part_id) || {};
+            return {
+                id: b.id,
+                product_id: b.product_id,
+                part_id: b.part_id,
+                part_code: part.item_code || `PRT-${b.part_id}`,
+                part_name: part.name || '알수없는부품',
+                spec: part.spec || '-',
+                unit: part.unit || 'EA',
+                current_stock: part.current_stock || 0,
+                quantity_required: b.quantity_required
+            };
+        });
+    },
+
+    saveBOM(productId, parts) {
+        const data = this.getData();
+        data.boms = (data.boms || []).filter(b => b.product_id != productId);
+        let maxId = data.boms.reduce((max, b) => Math.max(max, b.id || 0), 0);
+
+        parts.forEach(p => {
+            maxId++;
+            data.boms.push({
+                id: maxId,
+                product_id: productId,
+                part_id: p.part_id,
+                quantity_required: p.quantity_required
+            });
+        });
+        this.saveData(data);
+    },
+
+    executeProduction(productId, quantity, lotNumber, worker, note) {
+        const data = this.getData();
+        const product = data.items.find(i => i.id == productId);
+        if (!product) throw new Error('완제품을 찾을 수 없습니다.');
+
+        const boms = (data.boms || []).filter(b => b.product_id == productId);
+        if (boms.length === 0) throw new Error('BOM(부품 구성)이 설정되지 않았습니다.');
+
+        // 1. Verify all parts stock
+        boms.forEach(b => {
+            const part = data.items.find(i => i.id == b.part_id);
+            const needed = b.quantity_required * quantity;
+            if (!part || part.current_stock < needed) {
+                const partName = part ? part.name : `부품ID:${b.part_id}`;
+                throw new Error(`부품 [${partName}]의 재고가 부족합니다. (필요: ${needed}, 현재: ${part ? part.current_stock : 0})`);
+            }
+        });
+
+        const autoLot = lotNumber || `LOT-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${Math.floor(Math.random()*900+100)}`;
+        const ts = new Date().toISOString().replace('T', ' ').substring(0, 19);
+        let maxTxId = (data.transactions || []).reduce((max, t) => Math.max(max, t.id || 0), 0);
+
+        // 2. Deduct parts
+        boms.forEach(b => {
+            const part = data.items.find(i => i.id == b.part_id);
+            const deductQty = b.quantity_required * quantity;
+            part.current_stock -= deductQty;
+            maxTxId++;
+            data.transactions.unshift({
+                id: maxTxId,
+                item_id: part.id,
+                tx_type: 'out',
+                sub_type: '생산투입출고',
+                quantity: deductQty,
+                unit_price: part.unit_price || 0,
+                lot_number: autoLot,
+                company_name: '사내 생산라인',
+                worker: worker || '생산담당자',
+                timestamp: ts,
+                note: `[${product.name}] ${quantity}개 생산 조립 소모`
+            });
+        });
+
+        // 3. Increment product
+        product.current_stock += quantity;
+        maxTxId++;
+        data.transactions.unshift({
+            id: maxTxId,
+            item_id: product.id,
+            tx_type: 'in',
+            sub_type: '생산완료입고',
+            quantity: quantity,
+            unit_price: product.unit_price || 0,
+            lot_number: autoLot,
+            company_name: '사내 완제품실',
+            worker: worker || '생산담당자',
+            timestamp: ts,
+            note: note || `BOM 자동 조립 생산 완료 (소요 부품 ${boms.length}종 차감)`
+        });
+
+        this.saveData(data);
+        return {
+            message: `완제품 [${product.name}] ${quantity}개 생산이 성공적으로 완료되었습니다.`,
+            lot_number: autoLot
+        };
+    },
+
+    getDashboardStats() {
+        const data = this.getData();
+        const items = data.items || [];
+        const txs = data.transactions || [];
+
+        const totalItems = items.length;
+        const totalParts = items.filter(i => i.item_type === 'part').length;
+        const totalProducts = items.filter(i => i.item_type === 'product').length;
+
+        const totalStockQty = items.reduce((sum, i) => sum + (i.current_stock || 0), 0);
+        const partsStockQty = items.filter(i => i.item_type === 'part').reduce((sum, i) => sum + (i.current_stock || 0), 0);
+        const productsStockQty = items.filter(i => i.item_type === 'product').reduce((sum, i) => sum + (i.current_stock || 0), 0);
+        const totalStockValue = items.reduce((sum, i) => sum + ((i.current_stock || 0) * (i.unit_price || 0)), 0);
+
+        const todayStr = new Date().toISOString().slice(0, 10);
+        const curMonthStr = todayStr.slice(0, 7);
+
+        let todayIn = 0, todayOut = 0, monthIn = 0, monthOut = 0;
+        txs.forEach(t => {
+            const dateStr = (t.timestamp || '').slice(0, 10);
+            if (dateStr === todayStr) {
+                if (t.tx_type === 'in') todayIn += t.quantity;
+                else todayOut += t.quantity;
+            }
+            if (dateStr.startsWith(curMonthStr)) {
+                if (t.tx_type === 'in') monthIn += t.quantity;
+                else monthOut += t.quantity;
+            }
+        });
+
+        const lowStockAlerts = items.filter(i => i.safety_stock > 0 && i.current_stock < i.safety_stock).map(i => ({
+            id: i.id,
+            name: i.name,
+            item_code: i.item_code,
+            item_type: i.item_type,
+            spec: i.spec || '-',
+            unit: i.unit || 'EA',
+            current_stock: i.current_stock,
+            safety_stock: i.safety_stock,
+            shortage: i.safety_stock - i.current_stock
+        }));
+
+        const outOfStockCount = items.filter(i => i.current_stock === 0).length;
+
+        // Daily trend for past 7 days
+        const dailyTrend = [];
+        for (let d = 6; d >= 0; d--) {
+            const dt = new Date();
+            dt.setDate(dt.getDate() - d);
+            const dtStr = dt.toISOString().slice(0, 10);
+            let inQ = 0, outQ = 0;
+            txs.forEach(t => {
+                if ((t.timestamp || '').slice(0, 10) === dtStr) {
+                    if (t.tx_type === 'in') inQ += t.quantity;
+                    else outQ += t.quantity;
+                }
+            });
+            dailyTrend.push({ date: dtStr.slice(5), in_qty: inQ, out_qty: outQ });
+        }
+
+        // Category distribution
+        const catDist = {};
+        items.forEach(i => {
+            const c = i.category || '기타';
+            catDist[c] = (catDist[c] || 0) + (i.current_stock || 0);
+        });
+
+        return {
+            total_items: totalItems,
+            total_parts: totalParts,
+            total_products: totalProducts,
+            total_stock_quantity: totalStockQty,
+            parts_stock_quantity: partsStockQty,
+            products_stock_quantity: productsStockQty,
+            total_stock_value: totalStockValue,
+            today_in: todayIn,
+            today_out: todayOut,
+            month_in: monthIn,
+            month_out: monthOut,
+            low_stock_alerts: lowStockAlerts,
+            out_of_stock_count: outOfStockCount,
+            daily_trend: dailyTrend,
+            categories_distribution: catDist
+        };
+    },
+
+    getMonthlyStats(year = 2026) {
+        const data = this.getData();
+        const txs = data.transactions || [];
+        const items = data.items || [];
+        const itemMap = {};
+        items.forEach(i => itemMap[i.id] = i);
+
+        const stats = {};
+        txs.forEach(t => {
+            if (!t.timestamp || !t.timestamp.startsWith(String(year))) return;
+            const month = t.timestamp.slice(0, 7);
+            const item = itemMap[t.item_id];
+            if (!item) return;
+
+            const key = `${month}_${t.item_id}`;
+            if (!stats[key]) {
+                stats[key] = {
+                    month: month,
+                    item_id: item.id,
+                    item_code: item.item_code || `ITM-${item.id}`,
+                    item_name: item.name,
+                    item_type: item.item_type,
+                    spec: item.spec || '-',
+                    unit: item.unit || 'EA',
+                    total_in: 0,
+                    total_out: 0,
+                    current_stock: item.current_stock
+                };
+            }
+            if (t.tx_type === 'in') stats[key].total_in += t.quantity;
+            else stats[key].total_out += t.quantity;
+        });
+
+        const list = Object.values(stats);
+        list.sort((a, b) => b.month.localeCompare(a.month) || a.item_name.localeCompare(b.item_name));
+        return list;
+    },
+
+    getNotices() {
+        const data = this.getData();
+        return data.notices || [];
+    },
+
+    addNotice(content) {
+        const data = this.getData();
+        data.notices = data.notices || [];
+        const maxId = data.notices.reduce((max, n) => Math.max(max, n.id || 0), 0);
+        const notice = {
+            id: maxId + 1,
+            content: content,
+            is_resolved: 0,
+            created_at: new Date().toISOString().replace('T', ' ').substring(0, 16)
+        };
+        data.notices.unshift(notice);
+        this.saveData(data);
+        return notice;
+    },
+
+    toggleNotice(id) {
+        const data = this.getData();
+        const notice = (data.notices || []).find(n => n.id == id);
+        if (notice) {
+            notice.is_resolved = notice.is_resolved ? 0 : 1;
+            this.saveData(data);
+        }
+    },
+
+    deleteNotice(id) {
+        const data = this.getData();
+        data.notices = (data.notices || []).filter(n => n.id != id);
+        this.saveData(data);
+    },
+
+    exportFullBackup() {
+        const data = this.getData();
+        return {
+            version: '1.0',
+            system: 'Smart Inventory Management System',
+            exported_at: new Date().toISOString().replace('T', ' ').substring(0, 19),
+            counts: {
+                items: (data.items || []).length,
+                transactions: (data.transactions || []).length,
+                boms: (data.boms || []).length,
+                notices: (data.notices || []).length
+            },
+            items: data.items || [],
+            transactions: data.transactions || [],
+            boms: data.boms || [],
+            notices: data.notices || []
+        };
+    },
+
+    importFullBackup(backupData, mode = 'overwrite') {
+        if (!backupData || !Array.isArray(backupData.items)) {
+            throw new Error('유효하지 않은 백업 데이터입니다.');
+        }
+
+        if (mode === 'overwrite') {
+            this.saveData({
+                items: backupData.items || [],
+                transactions: backupData.transactions || [],
+                boms: backupData.boms || [],
+                notices: backupData.notices || []
+            });
+            return {
+                message: `전체 데이터 복원 완료: 품목 ${(backupData.items || []).length}건, 입출고 ${(backupData.transactions || []).length}건, BOM ${(backupData.boms || []).length}건`,
+                counts: backupData.counts
+            };
+        } else {
+            // Merge mode
+            const current = this.getData();
+            const currentItems = current.items || [];
+            let addedItems = 0;
+
+            (backupData.items || []).forEach(newItem => {
+                const exists = currentItems.find(i => (i.item_code && i.item_code === newItem.item_code) || (i.name === newItem.name && i.spec === newItem.spec));
+                if (!exists) {
+                    currentItems.push(newItem);
+                    addedItems++;
+                }
+            });
+
+            const mergedTx = [...(current.transactions || []), ...(backupData.transactions || [])];
+            const mergedBoms = [...(current.boms || []), ...(backupData.boms || [])];
+            const mergedNotices = [...(current.notices || []), ...(backupData.notices || [])];
+
+            current.items = currentItems;
+            current.transactions = mergedTx;
+            current.boms = mergedBoms;
+            current.notices = mergedNotices;
+
+            this.saveData(current);
+            return {
+                message: `데이터 병합 완료: 신규 품목 ${addedItems}건 추가됨`
+            };
+        }
+    }
+};
+
+// --- 2. Smart Hybrid Network Fetcher ---
+// Tries backend API first; falls back seamlessly to storageService if backend is offline/Netlify
+async function apiRequest(url, options = {}) {
+    try {
+        const res = await fetch(url, options);
+        const contentType = res.headers.get('content-type') || '';
+        // If backend returned valid JSON
+        if (res.ok && contentType.includes('application/json')) {
+            const data = await res.json();
+            return { fromBackend: true, data: data };
+        }
+    } catch (e) {
+        // Backend is offline or running on static hosting (Netlify)
+    }
+
+    // Fallback: Resolve via Client storageService
+    return { fromBackend: false, data: resolveOfflineApi(url, options) };
+}
+
+function resolveOfflineApi(url, options = {}) {
+    const u = new URL(url, window.location.origin);
+    const path = u.pathname;
+    const method = options.method ? options.method.toUpperCase() : 'GET';
+    const params = Object.fromEntries(u.searchParams.entries());
+
+    if (path === '/api/dashboard') {
+        return storageService.getDashboardStats();
+    }
+    if (path === '/api/items') {
+        if (method === 'GET') {
+            return storageService.getItems(params);
+        }
+        if (method === 'POST') {
+            const body = JSON.parse(options.body);
+            return storageService.saveItem(body);
+        }
+    }
+    if (path.startsWith('/api/items/')) {
+        const id = path.split('/')[3];
+        if (method === 'GET') return storageService.getItem(id);
+        if (method === 'PUT') {
+            const body = JSON.parse(options.body);
+            return storageService.saveItem({ ...body, id: id });
+        }
+        if (method === 'DELETE') {
+            storageService.deleteItem(id);
+            return { message: '삭제 완료' };
+        }
+    }
+    if (path === '/api/transactions' || path === '/api/transactions/recent') {
+        if (method === 'GET') return storageService.getTransactions(params);
+        if (method === 'POST') {
+            const body = JSON.parse(options.body);
+            return storageService.addTransaction(body);
+        }
+    }
+    if (path.startsWith('/api/transactions/')) {
+        const id = path.split('/')[3];
+        if (method === 'PUT') {
+            const body = JSON.parse(options.body);
+            return storageService.updateTransaction(id, body);
+        }
+        if (method === 'DELETE') {
+            storageService.deleteTransaction(id);
+            return { message: '삭제 완료' };
+        }
+    }
+    if (path.startsWith('/api/bom/')) {
+        const productId = path.split('/')[3];
+        return storageService.getBOM(productId);
+    }
+    if (path === '/api/bom' && method === 'POST') {
+        const body = JSON.parse(options.body);
+        storageService.saveBOM(body.product_id, body.parts);
+        return { message: 'BOM 저장 완료' };
+    }
+    if (path === '/api/production' && method === 'POST') {
+        const body = JSON.parse(options.body);
+        return storageService.executeProduction(body.product_id, body.quantity, body.lot_number, body.worker, body.note);
+    }
+    if (path === '/api/statistics/monthly') {
+        return storageService.getMonthlyStats(parseInt(params.year) || 2026);
+    }
+    if (path === '/api/notices') {
+        if (method === 'GET') return storageService.getNotices();
+        if (method === 'POST') {
+            const body = JSON.parse(options.body);
+            return storageService.addNotice(body.content);
+        }
+    }
+    if (path.includes('/notices/') && path.endsWith('/toggle')) {
+        const id = path.split('/')[3];
+        storageService.toggleNotice(id);
+        return { message: '상태 변경 완료' };
+    }
+    if (path.startsWith('/api/notices/') && method === 'DELETE') {
+        const id = path.split('/')[3];
+        storageService.deleteNotice(id);
+        return { message: '삭제 완료' };
+    }
+    if (path === '/api/backup/export') {
+        return storageService.exportFullBackup();
+    }
+    if (path === '/api/backup/import' && method === 'POST') {
+        const body = JSON.parse(options.body);
+        return storageService.importFullBackup(body.data, body.mode);
+    }
+    if (path === '/api/system/network-info') {
+        return { ip: '127.0.0.1', port: 8000, url: window.location.href };
+    }
+
+    return {};
+}
+
+// --- 3. UI Application Logic ---
 
 let cachedItems = [];
 let cachedTransactions = [];
@@ -11,7 +657,6 @@ let selectedBOMProductId = null;
 let currentBOMData = [];
 let html5QrScanner = null;
 
-// Charts references
 let trendChart = null;
 let distributionChart = null;
 
@@ -22,7 +667,6 @@ document.addEventListener('DOMContentLoaded', () => {
     switchTab('dashboard');
 });
 
-// Real-time Clock
 function initClock() {
     const updateTime = () => {
         const now = new Date();
@@ -35,7 +679,6 @@ function initClock() {
     setInterval(updateTime, 1000);
 }
 
-// Mobile Sidebar Drawer Toggle
 function toggleMobileSidebar() {
     const sidebar = document.getElementById('main-sidebar');
     const backdrop = document.getElementById('mobile-sidebar-backdrop');
@@ -45,11 +688,9 @@ function toggleMobileSidebar() {
     }
 }
 
-// Tab Switching
 function switchTab(tabId) {
     currentActiveTab = tabId;
 
-    // Sidebar active styles
     document.querySelectorAll('#main-sidebar nav button').forEach(btn => {
         btn.classList.remove('bg-brand-600', 'text-white', 'shadow-sm');
         btn.classList.add('text-slate-300', 'hover:bg-slate-800');
@@ -65,12 +706,10 @@ function switchTab(tabId) {
         if (icon) icon.classList.add('text-teal-300');
     }
 
-    // Tab content visibility
     document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
     const targetContent = document.getElementById(`tab-${tabId}`);
     if (targetContent) targetContent.classList.add('active');
 
-    // Page titles
     const titles = {
         'dashboard': '대시보드',
         'items': '품목 관리 (생산 부품 및 완제품)',
@@ -81,13 +720,11 @@ function switchTab(tabId) {
     const titleEl = document.getElementById('page-title');
     if (titleEl) titleEl.innerText = titles[tabId] || '재고 관리 시스템';
 
-    // Close mobile sidebar if open
     const sidebar = document.getElementById('main-sidebar');
     if (sidebar && !sidebar.classList.contains('-translate-x-full') && window.innerWidth < 1024) {
         toggleMobileSidebar();
     }
 
-    // Load data for active tab
     if (tabId === 'dashboard') loadDashboard();
     if (tabId === 'items') loadItems();
     if (tabId === 'transactions') loadTransactions();
@@ -96,10 +733,10 @@ function switchTab(tabId) {
 }
 
 function refreshCurrentTab() {
+    preloadItemOptions();
     switchTab(currentActiveTab);
 }
 
-// Modal Helpers
 function openModal(id) {
     const modal = document.getElementById(id);
     if (modal) {
@@ -117,16 +754,13 @@ function closeModal(id) {
 }
 
 // ==============================================================================
-// 1. 대시보드 (DASHBOARD)
+// 1. 대시보드
 // ==============================================================================
 
 async function loadDashboard() {
     try {
-        const res = await fetch('/api/dashboard');
-        if (!res.ok) throw new Error('대시보드 데이터를 불러오지 못했습니다.');
-        const data = await res.json();
+        const { data } = await apiRequest('/api/dashboard');
 
-        // 1. KPI Cards
         document.getElementById('dash-total-items').innerText = (data.total_items || 0).toLocaleString();
         document.getElementById('dash-total-parts').innerText = (data.total_parts || 0).toLocaleString();
         document.getElementById('dash-total-products').innerText = (data.total_products || 0).toLocaleString();
@@ -156,17 +790,10 @@ async function loadDashboard() {
             }
         }
 
-        // 2. Render Charts
         renderTrendChart(data.daily_trend || []);
         renderDistributionChart(data.categories_distribution || {}, data.total_parts, data.total_products);
-
-        // 3. Render Low Stock Alerts Widget
         renderLowStockAlerts(data.low_stock_alerts || []);
-
-        // 4. Render Recent Transactions
         loadRecentTransactions();
-
-        // 5. Render Notices
         loadNotices();
 
     } catch (err) {
@@ -263,7 +890,7 @@ function renderLowStockAlerts(alerts) {
         container.innerHTML = `
             <div class="text-center py-12 text-slate-400 text-xs">
                 <i class="fa-solid fa-circle-check text-emerald-500 text-3xl mb-2 block"></i>
-                현재 모든 품목의 재고가 안전재고 이상으로 원활합니다.
+                현재 모든 품목의 재고가 안전하게 유지되고 있습니다.
             </div>
         `;
         return;
@@ -312,16 +939,15 @@ async function loadRecentTransactions() {
     if (!container) return;
 
     try {
-        const res = await fetch('/api/transactions/recent?limit=8');
-        const txs = await res.json();
+        const { data: txs } = await apiRequest('/api/transactions/recent');
 
-        if (txs.length === 0) {
+        if (!txs || txs.length === 0) {
             container.innerHTML = `<div class="text-center py-10 text-slate-400 text-xs">최근 입출고 내역이 없습니다.</div>`;
             return;
         }
 
         let html = '';
-        txs.forEach(tx => {
+        (txs.slice(0, 8)).forEach(tx => {
             const isIn = tx.tx_type === 'in';
             html += `
                 <div class="p-2.5 rounded-xl border border-slate-100 bg-white hover:bg-slate-50/80 flex items-center justify-between transition-colors">
@@ -334,7 +960,7 @@ async function loadRecentTransactions() {
                                 <span class="text-xs font-bold text-slate-800 truncate">${tx.item_name}</span>
                                 <span class="text-[10px] text-slate-400 font-mono">${tx.item_code}</span>
                             </div>
-                            <p class="text-[11px] text-slate-500 truncate">${tx.sub_type || (isIn ? '입고' : '출고')} · ${tx.worker || '담당자미지정'} · ${tx.timestamp.substring(5, 16)}</p>
+                            <p class="text-[11px] text-slate-500 truncate">${tx.sub_type || (isIn ? '입고' : '출고')} · ${tx.worker || '담당자미지정'} · ${(tx.timestamp || '').substring(5, 16)}</p>
                         </div>
                     </div>
                     <div class="text-right flex-shrink-0">
@@ -349,16 +975,14 @@ async function loadRecentTransactions() {
     }
 }
 
-// Notice Board
 async function loadNotices() {
     const container = document.getElementById('dash-notices-container');
     if (!container) return;
 
     try {
-        const res = await fetch('/api/notices');
-        const notices = await res.json();
+        const { data: notices } = await apiRequest('/api/notices');
 
-        if (notices.length === 0) {
+        if (!notices || notices.length === 0) {
             container.innerHTML = `<div class="text-center py-10 text-slate-400 text-xs">등록된 현장 공지 및 메모가 없습니다.</div>`;
             return;
         }
@@ -399,7 +1023,7 @@ async function addNoticePrompt() {
     });
 
     if (text && text.trim()) {
-        await fetch('/api/notices', {
+        await apiRequest('/api/notices', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ content: text.trim() })
@@ -409,12 +1033,12 @@ async function addNoticePrompt() {
 }
 
 async function toggleNotice(id) {
-    await fetch(`/api/notices/${id}/toggle`, { method: 'PUT' });
+    await apiRequest(`/api/notices/${id}/toggle`, { method: 'PUT' });
     loadNotices();
 }
 
 async function deleteNotice(id) {
-    await fetch(`/api/notices/${id}`, { method: 'DELETE' });
+    await apiRequest(`/api/notices/${id}`, { method: 'DELETE' });
     loadNotices();
 }
 
@@ -426,7 +1050,7 @@ function filterLowStockView() {
 }
 
 // ==============================================================================
-// 2. 품목 관리 (ITEM MASTER)
+// 2. 품목 관리
 // ==============================================================================
 
 async function loadItems() {
@@ -440,20 +1064,19 @@ async function loadItems() {
     if (currentLowStockOnly) url += `low_stock_only=true&`;
 
     try {
-        const res = await fetch(url);
-        const items = await res.json();
-        cachedItems = items;
+        const { data: items } = await apiRequest(url);
+        cachedItems = items || [];
 
         const tableBody = document.getElementById('items-table-body');
-        document.getElementById('item-filtered-count').innerText = items.length.toLocaleString();
+        document.getElementById('item-filtered-count').innerText = cachedItems.length.toLocaleString();
 
-        if (items.length === 0) {
+        if (cachedItems.length === 0) {
             tableBody.innerHTML = `<tr><td colspan="12" class="py-12 text-center text-slate-400">조건에 일치하는 품목이 없습니다.</td></tr>`;
             return;
         }
 
         let html = '';
-        items.forEach(item => {
+        cachedItems.forEach(item => {
             const isPart = item.item_type === 'part';
             const isOutOfStock = item.current_stock === 0;
             const isLowStock = item.safety_stock > 0 && item.current_stock < item.safety_stock;
@@ -509,7 +1132,7 @@ async function loadItems() {
             `;
         });
         tableBody.innerHTML = html;
-        document.getElementById('item-total-master-count').innerText = items.length;
+        document.getElementById('item-total-master-count').innerText = cachedItems.length;
 
     } catch (err) {
         console.error('loadItems error:', err);
@@ -558,7 +1181,6 @@ function handleItemSearch(e) {
     }, 300);
 }
 
-// Item Create & Update
 async function openItemModal(itemId = null) {
     document.getElementById('itemForm').reset();
     document.getElementById('itemFormId').value = '';
@@ -570,8 +1192,7 @@ async function openItemModal(itemId = null) {
         if (initialStockDiv) initialStockDiv.classList.add('hidden');
 
         try {
-            const res = await fetch(`/api/items/${itemId}`);
-            const item = await res.json();
+            const { data: item } = await apiRequest(`/api/items/${itemId}`);
 
             document.getElementById('itemFormId').value = item.id;
             document.getElementById('itemFormType').value = item.item_type;
@@ -617,25 +1238,14 @@ async function submitItemForm(e) {
     }
 
     try {
-        let res;
-        if (itemId) {
-            res = await fetch(`/api/items/${itemId}`, {
-                method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(itemData)
-            });
-        } else {
-            res = await fetch('/api/items', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(itemData)
-            });
-        }
+        const url = itemId ? `/api/items/${itemId}` : '/api/items';
+        const method = itemId ? 'PUT' : 'POST';
 
-        if (!res.ok) {
-            const errData = await res.json();
-            throw new Error(errData.detail || '저장에 실패했습니다.');
-        }
+        await apiRequest(url, {
+            method: method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(itemData)
+        });
 
         closeModal('itemModal');
         Swal.fire({
@@ -666,8 +1276,7 @@ async function deleteItem(id, name) {
 
     if (result.isConfirmed) {
         try {
-            const res = await fetch(`/api/items/${id}`, { method: 'DELETE' });
-            if (!res.ok) throw new Error('삭제에 실패했습니다.');
+            await apiRequest(`/api/items/${id}`, { method: 'DELETE' });
             Swal.fire('삭제 완료', '품목이 삭제되었습니다.', 'success');
             loadItems();
             preloadItemOptions();
@@ -678,14 +1287,13 @@ async function deleteItem(id, name) {
 }
 
 // ==============================================================================
-// 3. 입출고 관리 (TRANSACTIONS)
+// 3. 입출고 관리
 // ==============================================================================
 
 async function preloadItemOptions() {
     try {
-        const res = await fetch('/api/items');
-        const items = await res.json();
-        cachedItems = items;
+        const { data: items } = await apiRequest('/api/items');
+        cachedItems = items || [];
 
         const inboundSelect = document.getElementById('inboundItemId');
         const outboundSelect = document.getElementById('outboundItemId');
@@ -693,14 +1301,14 @@ async function preloadItemOptions() {
 
         if (inboundSelect) {
             inboundSelect.innerHTML = '<option value="">입고할 품목을 선택하세요</option>' +
-                items.map(i => `<option value="${i.id}">[${i.item_code}] ${i.name} (${i.spec || '-'}) - 현재: ${i.current_stock}${i.unit}</option>`).join('');
+                cachedItems.map(i => `<option value="${i.id}">[${i.item_code}] ${i.name} (${i.spec || '-'}) - 현재: ${i.current_stock}${i.unit}</option>`).join('');
         }
         if (outboundSelect) {
             outboundSelect.innerHTML = '<option value="">출고할 품목을 선택하세요</option>' +
-                items.map(i => `<option value="${i.id}">[${i.item_code}] ${i.name} (${i.spec || '-'}) - 출고가능: ${i.current_stock}${i.unit}</option>`).join('');
+                cachedItems.map(i => `<option value="${i.id}">[${i.item_code}] ${i.name} (${i.spec || '-'}) - 출고가능: ${i.current_stock}${i.unit}</option>`).join('');
         }
         if (prodProductSelect) {
-            const products = items.filter(i => i.item_type === 'product');
+            const products = cachedItems.filter(i => i.item_type === 'product');
             prodProductSelect.innerHTML = '<option value="">생산할 완제품을 선택하세요</option>' +
                 products.map(i => `<option value="${i.id}">[${i.item_code}] ${i.name} (${i.spec || '-'}) - 현재고: ${i.current_stock}${i.unit}</option>`).join('');
         }
@@ -775,15 +1383,11 @@ async function submitInboundForm(e) {
     };
 
     try {
-        const res = await fetch('/api/transactions', {
+        await apiRequest('/api/transactions', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(data)
         });
-        if (!res.ok) {
-            const err = await res.json();
-            throw new Error(err.detail || '입고 처리에 실패했습니다.');
-        }
 
         closeModal('inboundModal');
         Swal.fire({
@@ -822,15 +1426,11 @@ async function submitOutboundForm(e) {
     };
 
     try {
-        const res = await fetch('/api/transactions', {
+        await apiRequest('/api/transactions', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(data)
         });
-        if (!res.ok) {
-            const err = await res.json();
-            throw new Error(err.detail || '출고 처리에 실패했습니다.');
-        }
 
         closeModal('outboundModal');
         Swal.fire({
@@ -864,20 +1464,19 @@ async function loadTransactions() {
     if (search) url += `search=${encodeURIComponent(search)}&`;
 
     try {
-        const res = await fetch(url);
-        const txs = await res.json();
-        cachedTransactions = txs;
+        const { data: txs } = await apiRequest(url);
+        cachedTransactions = txs || [];
 
         const tableBody = document.getElementById('tx-table-body');
-        document.getElementById('tx-count').innerText = txs.length.toLocaleString();
+        document.getElementById('tx-count').innerText = cachedTransactions.length.toLocaleString();
 
-        if (txs.length === 0) {
+        if (cachedTransactions.length === 0) {
             tableBody.innerHTML = `<tr><td colspan="13" class="py-12 text-center text-slate-400">조회된 입출고 이력이 없습니다.</td></tr>`;
             return;
         }
 
         let html = '';
-        txs.forEach(tx => {
+        cachedTransactions.forEach(tx => {
             const isIn = tx.tx_type === 'in';
             const isPart = tx.item_type === 'part';
 
@@ -997,15 +1596,11 @@ async function submitEditTxForm(e) {
     };
 
     try {
-        const res = await fetch(`/api/transactions/${txId}`, {
+        await apiRequest(`/api/transactions/${txId}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(data)
         });
-        if (!res.ok) {
-            const err = await res.json();
-            throw new Error(err.detail || '수정에 실패했습니다.');
-        }
 
         closeModal('editTxModal');
         Swal.fire('수정 완료', '입출고 이력 및 현재고가 정정되었습니다.', 'success');
@@ -1029,11 +1624,7 @@ async function cancelTransaction(txId) {
 
     if (result.isConfirmed) {
         try {
-            const res = await fetch(`/api/transactions/${txId}`, { method: 'DELETE' });
-            if (!res.ok) {
-                const err = await res.json();
-                throw new Error(err.detail || '거래 취소에 실패했습니다.');
-            }
+            await apiRequest(`/api/transactions/${txId}`, { method: 'DELETE' });
             Swal.fire('취소 완료', '거래가 취소되고 재고가 정상 복원되었습니다.', 'success');
             loadTransactions();
         } catch (err) {
@@ -1043,15 +1634,15 @@ async function cancelTransaction(txId) {
 }
 
 // ==============================================================================
-// 4. 생산 관리 & BOM 조립 (PRODUCTION)
+// 4. 생산 관리 & BOM 조립
 // ==============================================================================
 
 let allProductsList = [];
 
 async function loadProductionTab() {
     try {
-        const res = await fetch('/api/items?item_type=product');
-        allProductsList = await res.json();
+        const { data: products } = await apiRequest('/api/items?item_type=product');
+        allProductsList = products || [];
 
         const countEl = document.getElementById('bom-product-count');
         if (countEl) countEl.innerText = `총 ${allProductsList.length}개`;
@@ -1105,20 +1696,17 @@ async function selectProductForBOM(productId) {
     renderBOMProductList(allProductsList);
 
     try {
-        const res = await fetch(`/api/items/${productId}`);
-        const item = await res.json();
+        const { data: item } = await apiRequest(`/api/items/${productId}`);
 
         document.getElementById('bom-detail-code').innerText = item.item_code;
         document.getElementById('bom-detail-name').innerText = item.name;
         document.getElementById('bom-detail-spec').innerText = `규격: ${item.spec || '-'} | 적재위치: ${item.location || '-'} | 현재고: ${item.current_stock} ${item.unit}`;
 
-        // Fetch BOM
-        const bomRes = await fetch(`/api/bom/${productId}`);
-        const bomList = await bomRes.json();
-        currentBOMData = bomList;
+        const { data: bomList } = await apiRequest(`/api/bom/${productId}`);
+        currentBOMData = bomList || [];
 
         const tableBody = document.getElementById('bom-parts-table-body');
-        if (bomList.length === 0) {
+        if (currentBOMData.length === 0) {
             tableBody.innerHTML = `
                 <tr>
                     <td colspan="6" class="py-10 text-center text-slate-400 text-xs">
@@ -1132,7 +1720,7 @@ async function selectProductForBOM(productId) {
         }
 
         let html = '';
-        bomList.forEach(b => {
+        currentBOMData.forEach(b => {
             const hasStock = b.current_stock >= b.quantity_required;
             html += `
                 <tr class="hover:bg-slate-50/80 transition-colors">
@@ -1154,7 +1742,6 @@ async function selectProductForBOM(productId) {
     }
 }
 
-// Production Modal & Execution
 function openProductionModal(preselectedId = null) {
     document.getElementById('productionForm').reset();
     preloadItemOptions().then(() => {
@@ -1188,10 +1775,9 @@ async function calculateProductionRequirements() {
     }
 
     try {
-        const res = await fetch(`/api/bom/${productId}`);
-        const bomList = await res.json();
+        const { data: bomList } = await apiRequest(`/api/bom/${productId}`);
 
-        if (bomList.length === 0) {
+        if (!bomList || bomList.length === 0) {
             previewContainer.innerHTML = '<p class="text-rose-500 text-center py-2">이 완제품에 설정된 BOM(부품 소요량)이 없습니다.</p>';
             badge.className = 'px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-100 text-rose-700';
             badge.innerText = 'BOM 없음';
@@ -1245,7 +1831,7 @@ async function submitProductionForm(e) {
     if (!productId || qty <= 0) return;
 
     try {
-        const res = await fetch('/api/production', {
+        const { data } = await apiRequest('/api/production', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -1256,11 +1842,6 @@ async function submitProductionForm(e) {
                 note: note
             })
         });
-
-        const data = await res.json();
-        if (!res.ok) {
-            throw new Error(data.detail || '생산 처리에 실패했습니다.');
-        }
 
         closeModal('productionModal');
         Swal.fire({
@@ -1284,7 +1865,6 @@ async function submitProductionForm(e) {
     }
 }
 
-// Edit BOM Configuration
 async function openEditBOMModal() {
     if (!selectedBOMProductId) return;
 
@@ -1297,15 +1877,10 @@ async function openEditBOMModal() {
     const container = document.getElementById('editBomRowsContainer');
     container.innerHTML = '';
 
-    // Fetch all parts
-    const partsRes = await fetch('/api/items?item_type=part');
-    const allParts = await partsRes.json();
+    const { data: allParts } = await apiRequest('/api/items?item_type=part');
+    const { data: currentBOM } = await apiRequest(`/api/bom/${selectedBOMProductId}`);
 
-    // Fetch current BOM
-    const bomRes = await fetch(`/api/bom/${selectedBOMProductId}`);
-    const currentBOM = await bomRes.json();
-
-    if (currentBOM.length === 0) {
+    if (!currentBOM || currentBOM.length === 0) {
         addBOMRow(allParts);
     } else {
         currentBOM.forEach(b => {
@@ -1356,12 +1931,11 @@ async function saveBOMConfiguration() {
     });
 
     try {
-        const res = await fetch('/api/bom', {
+        await apiRequest('/api/bom', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ product_id: productId, parts: parts })
         });
-        if (!res.ok) throw new Error('BOM 저장에 실패했습니다.');
 
         closeModal('editBomModal');
         Swal.fire('저장 완료', 'BOM 부품 구성이 성공적으로 등록되었습니다.', 'success');
@@ -1372,17 +1946,16 @@ async function saveBOMConfiguration() {
 }
 
 // ==============================================================================
-// 5. 월별 통계 및 보고서 (MONTHLY)
+// 5. 월별 통계
 // ==============================================================================
 
 async function loadMonthlyStats() {
     const year = parseInt(document.getElementById('monthly-year-select')?.value) || 2026;
     try {
-        const res = await fetch(`/api/statistics/monthly?year=${year}`);
-        const stats = await res.json();
+        const { data: stats } = await apiRequest(`/api/statistics/monthly?year=${year}`);
         const tableBody = document.getElementById('monthly-table-body');
 
-        if (stats.length === 0) {
+        if (!stats || stats.length === 0) {
             tableBody.innerHTML = `<tr><td colspan="8" class="py-12 text-center text-slate-400">해당 연도의 집계 데이터가 없습니다.</td></tr>`;
             return;
         }
@@ -1414,13 +1987,12 @@ async function loadMonthlyStats() {
 }
 
 // ==============================================================================
-// 6. 바코드 & QR 라벨 인쇄 (BARCODE & QR)
+// 6. 라벨 인쇄
 // ==============================================================================
 
 async function printItemLabel(itemId) {
     try {
-        const res = await fetch(`/api/items/${itemId}`);
-        const item = await res.json();
+        const { data: item } = await apiRequest(`/api/items/${itemId}`);
 
         document.getElementById('label-type-badge').innerText = item.item_type === 'product' ? '완제품' : '생산부품';
         document.getElementById('label-location').innerText = item.location ? `위치: ${item.location}` : '';
@@ -1429,7 +2001,6 @@ async function printItemLabel(itemId) {
         document.getElementById('label-safety').innerText = `${item.safety_stock} ${item.unit || 'EA'}`;
         document.getElementById('label-code-str').innerText = item.item_code;
 
-        // 1. Generate Barcode with JsBarcode
         JsBarcode('#label-barcode-svg', item.item_code, {
             format: 'CODE128',
             width: 2,
@@ -1440,7 +2011,6 @@ async function printItemLabel(itemId) {
             textMargin: 3
         });
 
-        // 2. Generate QR Code with QRCode.js
         const qrContainer = document.getElementById('label-qrcode-container');
         qrContainer.innerHTML = '';
         const qrPayload = JSON.stringify({
@@ -1466,7 +2036,7 @@ async function printItemLabel(itemId) {
 }
 
 // ==============================================================================
-// 7. 바코드 / QR 카메라 스캐너
+// 7. 바코드 스캐너
 // ==============================================================================
 
 function openScannerModal() {
@@ -1538,10 +2108,9 @@ async function handleScannedBarcode(barcodeText) {
         if (obj.code) searchCode = obj.code;
     } catch (e) { }
 
-    const res = await fetch(`/api/items?search=${encodeURIComponent(searchCode)}`);
-    const items = await res.json();
+    const { data: items } = await apiRequest(`/api/items?search=${encodeURIComponent(searchCode)}`);
 
-    if (items.length === 0) {
+    if (!items || items.length === 0) {
         Swal.fire('품목 미발견', `스캔된 코드 [${searchCode}]에 해당하는 품목이 없습니다.`, 'warning');
         return;
     }
@@ -1571,13 +2140,12 @@ async function handleScannedBarcode(barcodeText) {
 }
 
 // ==============================================================================
-// 8. 모바일 / 태블릿 현장 접속 안내 (NETWORK)
+// 8. 모바일 연동 모달
 // ==============================================================================
 
 async function openNetworkModal() {
     try {
-        const res = await fetch('/api/system/network-info');
-        const net = await res.json();
+        const { data: net } = await apiRequest('/api/system/network-info');
 
         document.getElementById('network-url-display').innerText = net.url;
         const qrContainer = document.getElementById('network-qrcode');
@@ -1599,7 +2167,7 @@ async function openNetworkModal() {
 }
 
 // ==============================================================================
-// 9. 엑셀 연동 (EXCEL SHEETJS IMPORT & EXPORT)
+// 9. 엑셀 연동
 // ==============================================================================
 
 function downloadExcelTemplate() {
@@ -1642,7 +2210,7 @@ async function processExcelUpload() {
                 throw new Error('엑셀 파일에 유효한 데이터가 없습니다.');
             }
 
-            const itemsToCreate = [];
+            let successCnt = 0;
             for (let i = 1; i < rows.length; i++) {
                 const r = rows[i];
                 if (!r || r.length === 0 || !r[1]) continue;
@@ -1651,7 +2219,7 @@ async function processExcelUpload() {
                 if (type.includes('완') || type.includes('prod')) type = 'product';
                 else type = 'part';
 
-                itemsToCreate.push({
+                const itemObj = {
                     item_type: type,
                     name: String(r[1]).trim(),
                     spec: r[2] ? String(r[2]).trim() : null,
@@ -1662,25 +2230,21 @@ async function processExcelUpload() {
                     current_stock: parseInt(r[7]) || 0,
                     safety_stock: parseInt(r[8]) || 0,
                     note: r[9] ? String(r[9]).trim() : null
+                };
+
+                await apiRequest('/api/items', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(itemObj)
                 });
+                successCnt++;
             }
-
-            if (itemsToCreate.length === 0) {
-                throw new Error('등록할 품목 데이터가 없습니다.');
-            }
-
-            const res = await fetch('/api/items/bulk', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(itemsToCreate)
-            });
-            const result = await res.json();
 
             closeModal('excelImportModal');
             Swal.fire({
                 icon: 'success',
                 title: '일괄 등록 완료',
-                text: `총 ${result.total}개 중 ${result.success}개 품목이 성공적으로 등록되었습니다.`
+                text: `총 ${successCnt}개 품목이 성공적으로 등록되었습니다.`
             });
 
             loadItems();
@@ -1703,15 +2267,11 @@ async function downloadAllDataExcel() {
             didOpen: () => Swal.showLoading()
         });
 
-        const [itemsRes, txRes, monthlyRes] = await Promise.all([
-            fetch('/api/items'),
-            fetch('/api/transactions?limit=2000'),
-            fetch('/api/statistics/monthly')
+        const [{ data: items }, { data: txs }, { data: monthly }] = await Promise.all([
+            apiRequest('/api/items'),
+            apiRequest('/api/transactions'),
+            apiRequest('/api/statistics/monthly')
         ]);
-
-        const items = await itemsRes.json();
-        const txs = await txRes.json();
-        const monthly = await monthlyRes.json();
 
         const wb = XLSX.utils.book_new();
 
@@ -1719,7 +2279,7 @@ async function downloadAllDataExcel() {
         const itemsData = [
             ["품목코드", "구분", "카테고리", "품명", "규격/사양", "단위", "적재위치", "단가(원)", "현재고", "안전재고", "비고"]
         ];
-        items.forEach(i => {
+        (items || []).forEach(i => {
             itemsData.push([
                 i.item_code,
                 i.item_type === 'product' ? '완제품' : '생산부품',
@@ -1741,7 +2301,7 @@ async function downloadAllDataExcel() {
         const txData = [
             ["일시", "거래구분", "세부유형", "품목코드", "품명", "구분", "규격", "수량", "단위", "LOT번호", "거래처/출하처", "담당자", "비고"]
         ];
-        txs.forEach(t => {
+        (txs || []).forEach(t => {
             txData.push([
                 t.timestamp,
                 t.tx_type === 'in' ? '입고' : '출고',
@@ -1765,7 +2325,7 @@ async function downloadAllDataExcel() {
         const monthlyData = [
             ["기준월", "품목코드", "품명", "구분", "규격", "월간총입고", "월간총출고", "현재고", "단위"]
         ];
-        monthly.forEach(m => {
+        (monthly || []).forEach(m => {
             monthlyData.push([
                 m.month,
                 m.item_code,
@@ -1844,13 +2404,12 @@ function exportTransactionsExcel() {
 
 async function exportMonthlyStatsExcel() {
     const year = parseInt(document.getElementById('monthly-year-select')?.value) || 2026;
-    const res = await fetch(`/api/statistics/monthly?year=${year}`);
-    const stats = await res.json();
+    const { data: stats } = await apiRequest(`/api/statistics/monthly?year=${year}`);
 
     const data = [
         ["기준월", "품목코드", "품명", "구분", "규격", "월간총입고", "월간총출고", "현재고", "단위"]
     ];
-    stats.forEach(m => {
+    (stats || []).forEach(m => {
         data.push([
             m.month,
             m.item_code,
@@ -1885,7 +2444,7 @@ function openBackupModal() {
     openModal('backupModal');
 }
 
-// 1. Download Full JSON Backup
+// 1. Download Full JSON Backup (100% Client-Side Safe)
 async function downloadFullJsonBackup() {
     try {
         Swal.fire({
@@ -1895,9 +2454,7 @@ async function downloadFullJsonBackup() {
             didOpen: () => Swal.showLoading()
         });
 
-        const res = await fetch('/api/backup/export');
-        if (!res.ok) throw new Error('백업 데이터를 불러오지 못했습니다.');
-        const backupJson = await res.json();
+        const { data: backupJson } = await apiRequest('/api/backup/export');
 
         const jsonStr = JSON.stringify(backupJson, null, 2);
         const blob = new Blob([jsonStr], { type: 'application/json;charset=utf-8' });
@@ -1912,15 +2469,22 @@ async function downloadFullJsonBackup() {
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
 
+        const counts = backupJson.counts || {
+            items: (backupJson.items || []).length,
+            transactions: (backupJson.transactions || []).length,
+            boms: (backupJson.boms || []).length,
+            notices: (backupJson.notices || []).length
+        };
+
         Swal.fire({
             icon: 'success',
             title: '백업 파일 다운로드 완료',
             html: `
                 <div class="text-xs text-left space-y-1">
-                    <p><b>품목 수:</b> ${backupJson.counts.items}건</p>
-                    <p><b>입출고 이력:</b> ${backupJson.counts.transactions}건</p>
-                    <p><b>BOM 구성:</b> ${backupJson.counts.boms}건</p>
-                    <p><b>현장 메모:</b> ${backupJson.counts.notices}건</p>
+                    <p><b>품목 수:</b> ${counts.items}건</p>
+                    <p><b>입출고 이력:</b> ${counts.transactions}건</p>
+                    <p><b>BOM 구성:</b> ${counts.boms}건</p>
+                    <p><b>현장 메모:</b> ${counts.notices}건</p>
                 </div>
             `,
             timer: 2500,
@@ -1952,7 +2516,6 @@ function handleBackupFileSelect(event) {
 
             loadedBackupData = data;
 
-            // Update UI preview
             const previewBox = document.getElementById('backupFilePreviewBox');
             document.getElementById('backupPreviewTime').innerText = data.exported_at || new Date().toLocaleString('ko-KR');
             document.getElementById('backupPreviewItems').innerText = `${(data.items || []).length}건`;
@@ -2011,7 +2574,7 @@ async function executeBackupRestore() {
             didOpen: () => Swal.showLoading()
         });
 
-        const res = await fetch('/api/backup/import', {
+        const { data: resData } = await apiRequest('/api/backup/import', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -2020,21 +2583,15 @@ async function executeBackupRestore() {
             })
         });
 
-        const resData = await res.json();
-        if (!res.ok) {
-            throw new Error(resData.detail || '복원에 실패했습니다.');
-        }
-
         closeModal('backupModal');
 
         await Swal.fire({
             icon: 'success',
             title: '복원 완료!',
-            text: resData.message,
+            text: resData.message || '데이터가 성공적으로 복원되었습니다.',
             confirmButtonColor: '#0d9488'
         });
 
-        // Reload current tab and options
         preloadItemOptions();
         refreshCurrentTab();
 
