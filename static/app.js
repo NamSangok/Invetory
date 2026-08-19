@@ -1869,3 +1869,176 @@ async function exportMonthlyStatsExcel() {
     XLSX.utils.book_append_sheet(wb, ws, `${year}년_월별집계`);
     XLSX.writeFile(wb, `월별통계보고서_${year}년.xlsx`);
 }
+
+// ==============================================================================
+// 10. 전체 데이터 백업 및 복원 (BACKUP & RESTORE)
+// ==============================================================================
+
+let loadedBackupData = null;
+
+function openBackupModal() {
+    loadedBackupData = null;
+    const fileInput = document.getElementById('backupFileInput');
+    if (fileInput) fileInput.value = '';
+    const previewBox = document.getElementById('backupFilePreviewBox');
+    if (previewBox) previewBox.classList.add('hidden');
+    openModal('backupModal');
+}
+
+// 1. Download Full JSON Backup
+async function downloadFullJsonBackup() {
+    try {
+        Swal.fire({
+            title: '백업 파일 생성 중...',
+            text: '잠시만 기다려주세요.',
+            allowOutsideClick: false,
+            didOpen: () => Swal.showLoading()
+        });
+
+        const res = await fetch('/api/backup/export');
+        if (!res.ok) throw new Error('백업 데이터를 불러오지 못했습니다.');
+        const backupJson = await res.json();
+
+        const jsonStr = JSON.stringify(backupJson, null, 2);
+        const blob = new Blob([jsonStr], { type: 'application/json;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+
+        const a = document.createElement('a');
+        const nowStr = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+        a.href = url;
+        a.download = `inventory_backup_${nowStr}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        Swal.fire({
+            icon: 'success',
+            title: '백업 파일 다운로드 완료',
+            html: `
+                <div class="text-xs text-left space-y-1">
+                    <p><b>품목 수:</b> ${backupJson.counts.items}건</p>
+                    <p><b>입출고 이력:</b> ${backupJson.counts.transactions}건</p>
+                    <p><b>BOM 구성:</b> ${backupJson.counts.boms}건</p>
+                    <p><b>현장 메모:</b> ${backupJson.counts.notices}건</p>
+                </div>
+            `,
+            timer: 2500,
+            showConfirmButton: false
+        });
+
+    } catch (err) {
+        Swal.fire('백업 오류', err.message, 'error');
+    }
+}
+
+// 2. Download Raw SQLite Database File
+function downloadRawSqliteDb() {
+    window.location.href = '/api/backup/download-db';
+}
+
+// 3. Handle File Selection for Restore
+function handleBackupFileSelect(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+        try {
+            const data = JSON.parse(e.target.result);
+            if (!data || !Array.isArray(data.items)) {
+                throw new Error('유효한 재고관리 백업 파일(.json) 형식이 아닙니다.');
+            }
+
+            loadedBackupData = data;
+
+            // Update UI preview
+            const previewBox = document.getElementById('backupFilePreviewBox');
+            document.getElementById('backupPreviewTime').innerText = data.exported_at || new Date().toLocaleString('ko-KR');
+            document.getElementById('backupPreviewItems').innerText = `${(data.items || []).length}건`;
+            document.getElementById('backupPreviewTxs').innerText = `${(data.transactions || []).length}건`;
+            document.getElementById('backupPreviewBoms').innerText = `${(data.boms || []).length}건`;
+            document.getElementById('backupPreviewNotices').innerText = `${(data.notices || []).length}건`;
+
+            previewBox.classList.remove('hidden');
+
+        } catch (err) {
+            Swal.fire('파일 읽기 오류', err.message, 'error');
+            event.target.value = '';
+        }
+    };
+    reader.readAsText(file);
+}
+
+// 4. Execute Restore
+async function executeBackupRestore() {
+    if (!loadedBackupData) {
+        Swal.fire('파일 선택', '복원할 백업 파일(.json)을 먼저 선택해주세요.', 'warning');
+        return;
+    }
+
+    const mode = document.querySelector('input[name="restoreMode"]:checked')?.value || 'overwrite';
+    const isOverwrite = mode === 'overwrite';
+
+    const confirmTitle = isOverwrite ? '전체 덮어쓰기 복원 확인' : '데이터 병합 복원 확인';
+    const confirmHtml = isOverwrite
+        ? `<div class="text-xs text-left space-y-2">
+            <p class="text-rose-600 font-bold">⚠️ 주의: 현재 등록된 모든 품목 및 입출고 내역이 백업 파일 시점으로 완전히 대체됩니다.</p>
+            <p>백업 파일에 포함된 <b>${loadedBackupData.items?.length || 0}개 품목</b> 및 <b>${loadedBackupData.transactions?.length || 0}개 입출고 이력</b>으로 복원하시겠습니까?</p>
+           </div>`
+        : `<div class="text-xs text-left space-y-2">
+            <p>현재 데이터를 유지하면서 백업 파일의 품목 및 이력을 추가 병합합니다. 진행하시겠습니까?</p>
+           </div>`;
+
+    const result = await Swal.fire({
+        title: confirmTitle,
+        html: confirmHtml,
+        icon: isOverwrite ? 'warning' : 'question',
+        showCancelButton: true,
+        confirmButtonColor: isOverwrite ? '#e11d48' : '#0d9488',
+        cancelButtonColor: '#64748b',
+        confirmButtonText: isOverwrite ? '네, 전체 덮어써서 복원합니다' : '네, 병합 복원합니다',
+        cancelButtonText: '취소'
+    });
+
+    if (!result.isConfirmed) return;
+
+    try {
+        Swal.fire({
+            title: '데이터 복원 적용 중...',
+            text: '데이터를 분석하고 데이터베이스에 적용하고 있습니다.',
+            allowOutsideClick: false,
+            didOpen: () => Swal.showLoading()
+        });
+
+        const res = await fetch('/api/backup/import', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                mode: mode,
+                data: loadedBackupData
+            })
+        });
+
+        const resData = await res.json();
+        if (!res.ok) {
+            throw new Error(resData.detail || '복원에 실패했습니다.');
+        }
+
+        closeModal('backupModal');
+
+        await Swal.fire({
+            icon: 'success',
+            title: '복원 완료!',
+            text: resData.message,
+            confirmButtonColor: '#0d9488'
+        });
+
+        // Reload current tab and options
+        preloadItemOptions();
+        refreshCurrentTab();
+
+    } catch (err) {
+        Swal.fire('복원 오류', err.message, 'error');
+    }
+}

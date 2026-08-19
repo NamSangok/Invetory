@@ -116,6 +116,10 @@
             </button>
 
             <div class="pt-5 px-3 pb-2 text-[11px] font-semibold text-slate-400 tracking-wider uppercase">도구 & 편의기능</div>
+            <button onclick="openBackupModal()" class="w-full flex items-center px-3.5 py-2 text-indigo-300 hover:bg-indigo-950/40 rounded-lg text-left text-xs font-semibold transition-colors border border-indigo-500/30 bg-indigo-500/10">
+                <i class="fa-solid fa-floppy-disk w-6 text-center mr-2 text-indigo-400"></i>
+                <span>데이터 백업 & 복원</span>
+            </button>
             <button onclick="openScannerModal()" class="w-full flex items-center px-3.5 py-2 text-slate-400 hover:bg-slate-800/80 hover:text-teal-300 rounded-lg text-left text-sm transition-colors">
                 <i class="fa-solid fa-barcode w-6 text-center mr-2"></i>
                 <span>바코드/QR 스캐너</span>
@@ -156,6 +160,10 @@
 
             <!-- Header Quick Actions -->
             <div class="flex items-center space-x-2 lg:space-x-3">
+                <button onclick="openBackupModal()" class="hidden sm:flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all border bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border-indigo-200" title="데이터 백업 및 복원">
+                    <i class="fa-solid fa-cloud-arrow-down text-indigo-600"></i>
+                    <span>데이터 백업 & 복원</span>
+                </button>
                 <button onclick="openInboundModal()" class="px-3 py-1.5 lg:px-3.5 lg:py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-lg text-xs lg:text-sm font-medium shadow-sm transition-all flex items-center space-x-1.5 active:scale-95">
                     <i class="fa-solid fa-arrow-down"></i>
                     <span>입고 등록</span>
@@ -1139,6 +1147,167 @@
                     <button type="submit" class="px-5 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-xl text-xs font-bold">수정 완료</button>
                 </div>
             </form>
+        </div>
+    </div>
+
+    <!-- 11. 🌟 전체 데이터 백업 및 복원 (Backup & Restore) 모달 -->
+    <div id="backupModal" class="fixed inset-0 bg-slate-900/60 z-50 hidden items-center justify-center p-4 backdrop-blur-xs">
+        <div class="bg-white rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden animate-fadeIn">
+            <!-- Modal Header -->
+            <div class="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-gradient-to-r from-indigo-50 via-slate-50 to-teal-50">
+                <div class="flex items-center space-x-2.5">
+                    <div class="w-9 h-9 rounded-xl bg-indigo-100 text-indigo-700 flex items-center justify-center text-base shadow-xs">
+                        <i class="fa-solid fa-cloud-arrow-down"></i>
+                    </div>
+                    <div>
+                        <h3 class="text-base font-bold text-slate-800">전체 데이터 백업 & 복원 (Backup & Restore)</h3>
+                        <p class="text-[11px] text-slate-500">현재 입력된 모든 품목, 입출고 수불부, BOM 구성을 안전하게 저장하고 다시 불러옵니다.</p>
+                    </div>
+                </div>
+                <button onclick="closeModal('backupModal')" class="text-slate-400 hover:text-slate-600 p-1">
+                    <i class="fa-solid fa-xmark text-lg"></i>
+                </button>
+            </div>
+
+            <div class="p-6 space-y-6 max-h-[80vh] overflow-y-auto">
+                
+                <!-- SECTION 1: DATA EXPORT / BACKUP -->
+                <div class="space-y-3">
+                    <div class="flex items-center space-x-2">
+                        <span class="w-2 h-2 rounded-full bg-indigo-600"></span>
+                        <h4 class="text-xs font-bold text-slate-800 uppercase tracking-wider">1. 현재 데이터 백업 (내보내기 / 저장)</h4>
+                    </div>
+
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <!-- Card 1: Full JSON Backup (Recommended) -->
+                        <div class="p-4 rounded-xl border border-indigo-200 bg-indigo-50/40 hover:bg-indigo-50/70 transition-all flex flex-col justify-between space-y-3">
+                            <div>
+                                <div class="flex items-center space-x-1.5 text-indigo-700 font-bold text-xs mb-1">
+                                    <i class="fa-solid fa-file-code"></i>
+                                    <span>JSON 완전 백업</span>
+                                </div>
+                                <p class="text-[11px] text-slate-600 leading-relaxed">품목, 수불부, BOM, 메모까지 100% 완전 저장 (복원용 권장)</p>
+                            </div>
+                            <button onclick="downloadFullJsonBackup()" class="w-full py-2 px-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold shadow-xs transition-all flex items-center justify-center space-x-1.5">
+                                <i class="fa-solid fa-download"></i>
+                                <span>백업 파일 다운로드</span>
+                            </button>
+                        </div>
+
+                        <!-- Card 2: Excel Spreadsheet -->
+                        <div class="p-4 rounded-xl border border-emerald-200 bg-emerald-50/40 hover:bg-emerald-50/70 transition-all flex flex-col justify-between space-y-3">
+                            <div>
+                                <div class="flex items-center space-x-1.5 text-emerald-700 font-bold text-xs mb-1">
+                                    <i class="fa-solid fa-file-excel"></i>
+                                    <span>엑셀 통합 백업</span>
+                                </div>
+                                <p class="text-[11px] text-slate-600 leading-relaxed">품목마스터, 수불부, 월별통계가 시트별로 정리된 스프레드시트</p>
+                            </div>
+                            <button onclick="downloadAllDataExcel()" class="w-full py-2 px-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold shadow-xs transition-all flex items-center justify-center space-x-1.5">
+                                <i class="fa-solid fa-file-excel"></i>
+                                <span>엑셀 파일 받기</span>
+                            </button>
+                        </div>
+
+                        <!-- Card 3: SQLite Raw DB -->
+                        <div class="p-4 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 transition-all flex flex-col justify-between space-y-3">
+                            <div>
+                                <div class="flex items-center space-x-1.5 text-slate-700 font-bold text-xs mb-1">
+                                    <i class="fa-solid fa-database"></i>
+                                    <span>SQLite DB 원본</span>
+                                </div>
+                                <p class="text-[11px] text-slate-600 leading-relaxed">서버 내부 데이터베이스 원본 파일 (.db) 직접 백업</p>
+                            </div>
+                            <button onclick="downloadRawSqliteDb()" class="w-full py-2 px-3 bg-slate-800 hover:bg-slate-900 text-white rounded-lg text-xs font-bold shadow-xs transition-all flex items-center justify-center space-x-1.5">
+                                <i class="fa-solid fa-floppy-disk"></i>
+                                <span>DB 파일 받기</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- SECTION 2: DATA IMPORT / RESTORE -->
+                <div class="pt-4 border-t border-slate-100 space-y-3">
+                    <div class="flex items-center space-x-2">
+                        <span class="w-2 h-2 rounded-full bg-teal-600"></span>
+                        <h4 class="text-xs font-bold text-slate-800 uppercase tracking-wider">2. 백업 파일 불러와서 복원하기 (적용)</h4>
+                    </div>
+
+                    <!-- File Selector Area -->
+                    <div class="p-4 border-2 border-dashed border-slate-300 hover:border-brand-500 rounded-2xl bg-slate-50/60 transition-all text-center space-y-2">
+                        <i class="fa-solid fa-cloud-arrow-up text-2xl text-slate-400"></i>
+                        <p class="text-xs font-semibold text-slate-700">저장해 둔 백업 파일(.json)을 선택하세요</p>
+                        <p class="text-[11px] text-slate-400">이전에 다운로드한 <code>inventory_backup_*.json</code> 파일을 업로드합니다.</p>
+                        <input type="file" id="backupFileInput" accept=".json" onchange="handleBackupFileSelect(event)" class="hidden">
+                        <button type="button" onclick="document.getElementById('backupFileInput').click()" class="px-4 py-2 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded-xl text-xs font-bold shadow-xs transition-all">
+                            <i class="fa-solid fa-folder-open mr-1"></i> 파일 선택하기
+                        </button>
+                    </div>
+
+                    <!-- Preview of Selected Backup File -->
+                    <div id="backupFilePreviewBox" class="hidden p-4 rounded-xl border border-indigo-200 bg-indigo-50/50 space-y-3 animate-fadeIn">
+                        <div class="flex items-center justify-between">
+                            <span class="text-xs font-bold text-indigo-900 flex items-center">
+                                <i class="fa-solid fa-circle-check text-emerald-600 mr-1.5"></i> 백업 파일 내용 확인
+                            </span>
+                            <span class="text-[11px] text-indigo-600 font-mono" id="backupPreviewTime">2026-08-19 12:00:00</span>
+                        </div>
+                        
+                        <div class="grid grid-cols-4 gap-2 text-center text-xs">
+                            <div class="p-2 bg-white rounded-lg border border-indigo-100">
+                                <span class="text-[10px] text-slate-400 block">품목 수</span>
+                                <strong class="text-sm font-bold text-slate-800" id="backupPreviewItems">0건</strong>
+                            </div>
+                            <div class="p-2 bg-white rounded-lg border border-indigo-100">
+                                <span class="text-[10px] text-slate-400 block">입출고 이력</span>
+                                <strong class="text-sm font-bold text-slate-800" id="backupPreviewTxs">0건</strong>
+                            </div>
+                            <div class="p-2 bg-white rounded-lg border border-indigo-100">
+                                <span class="text-[10px] text-slate-400 block">BOM 구성</span>
+                                <strong class="text-sm font-bold text-slate-800" id="backupPreviewBoms">0건</strong>
+                            </div>
+                            <div class="p-2 bg-white rounded-lg border border-indigo-100">
+                                <span class="text-[10px] text-slate-400 block">메모/공지</span>
+                                <strong class="text-sm font-bold text-slate-800" id="backupPreviewNotices">0건</strong>
+                            </div>
+                        </div>
+
+                        <!-- Restore Mode Options -->
+                        <div class="pt-2 border-t border-indigo-100/80 space-y-2">
+                            <label class="block text-xs font-bold text-slate-700">복원 방식 선택:</label>
+                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                <label class="flex items-start p-2.5 rounded-xl border bg-white border-indigo-300 cursor-pointer hover:bg-indigo-50/30">
+                                    <input type="radio" name="restoreMode" value="overwrite" checked class="mt-0.5 text-indigo-600 focus:ring-indigo-500">
+                                    <div class="ml-2 text-xs">
+                                        <strong class="text-slate-800 block">전체 덮어쓰기 복원 (권장)</strong>
+                                        <span class="text-[11px] text-slate-500">백업 시점의 상태로 완벽하게 되돌립니다.</span>
+                                    </div>
+                                </label>
+                                <label class="flex items-start p-2.5 rounded-xl border bg-white border-slate-200 cursor-pointer hover:bg-slate-50">
+                                    <input type="radio" name="restoreMode" value="merge" class="mt-0.5 text-indigo-600 focus:ring-indigo-500">
+                                    <div class="ml-2 text-xs">
+                                        <strong class="text-slate-800 block">병합 복원 (기존 유지)</strong>
+                                        <span class="text-[11px] text-slate-500">현재 데이터를 유지하고 새 품목을 추가합니다.</span>
+                                    </div>
+                                </label>
+                            </div>
+                        </div>
+
+                        <!-- Apply Button -->
+                        <div class="pt-2 flex justify-end">
+                            <button type="button" onclick="executeBackupRestore()" class="px-5 py-2.5 bg-brand-600 hover:bg-brand-700 text-white rounded-xl text-xs font-bold shadow-md transition-all flex items-center space-x-1.5 active:scale-95">
+                                <i class="fa-solid fa-rotate-left"></i>
+                                <span>백업 데이터 적용 및 시스템 복원 실행</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <div class="px-6 py-3 bg-slate-50 border-t border-slate-100 flex justify-end">
+                <button type="button" onclick="closeModal('backupModal')" class="px-4 py-2 bg-slate-200 text-slate-700 rounded-xl text-xs font-medium">닫기</button>
+            </div>
         </div>
     </div>
 

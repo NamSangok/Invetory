@@ -862,6 +862,306 @@ def delete_notice(notice_id: int, db: Session = Depends(get_db)):
         db.commit()
     return {"message": "삭제되었습니다."}
 
+# ==============================================================================
+# --- Full Data Backup & Restore APIs (전체 데이터 백업 및 복원) ---
+# ==============================================================================
+
+@app.get("/api/backup/export")
+def export_backup_data(db: Session = Depends(get_db)):
+    """전체 시스템 데이터(품목, 입출고 수불부, BOM 구성, 공지사항)를 완전한 JSON 포맷으로 백업 내보내기"""
+    items = db.query(models.Item).all()
+    txs = db.query(models.Transaction).order_by(models.Transaction.id.asc()).all()
+    boms = db.query(models.BOMItem).all()
+    notices = db.query(models.Notice).all()
+
+    items_data = []
+    for i in items:
+        items_data.append({
+            "id": i.id,
+            "item_code": i.item_code,
+            "name": i.name,
+            "item_type": i.item_type,
+            "category": i.category or "일반",
+            "spec": i.spec or "",
+            "unit": i.unit or "EA",
+            "location": i.location or "",
+            "unit_price": i.unit_price or 0,
+            "current_stock": i.current_stock or 0,
+            "safety_stock": i.safety_stock or 0,
+            "note": i.note or "",
+            "created_at": i.created_at.strftime("%Y-%m-%d %H:%M:%S") if i.created_at else ""
+        })
+
+    txs_data = []
+    for t in txs:
+        txs_data.append({
+            "id": t.id,
+            "item_id": t.item_id,
+            "tx_type": t.tx_type,
+            "sub_type": t.sub_type or "",
+            "quantity": t.quantity,
+            "unit_price": t.unit_price or 0,
+            "lot_number": t.lot_number or "",
+            "company_name": t.company_name or "",
+            "worker": t.worker or "",
+            "note": t.note or "",
+            "timestamp": t.timestamp.strftime("%Y-%m-%d %H:%M:%S") if t.timestamp else ""
+        })
+
+    boms_data = []
+    for b in boms:
+        boms_data.append({
+            "id": b.id,
+            "product_id": b.product_id,
+            "part_id": b.part_id,
+            "quantity_required": b.quantity_required
+        })
+
+    notices_data = []
+    for n in notices:
+        notices_data.append({
+            "id": n.id,
+            "content": n.content,
+            "is_resolved": n.is_resolved,
+            "created_at": n.created_at.strftime("%Y-%m-%d %H:%M:%S") if n.created_at else ""
+        })
+
+    backup_payload = {
+        "version": "1.0",
+        "system": "Smart Inventory Management System",
+        "exported_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "counts": {
+            "items": len(items_data),
+            "transactions": len(txs_data),
+            "boms": len(boms_data),
+            "notices": len(notices_data)
+        },
+        "items": items_data,
+        "transactions": txs_data,
+        "boms": boms_data,
+        "notices": notices_data
+    }
+
+    return backup_payload
+
+class BackupImportRequest(BaseModel):
+    mode: str = "overwrite"  # "overwrite" or "merge"
+    data: dict
+
+@app.post("/api/backup/import")
+def import_backup_data(payload: BackupImportRequest, db: Session = Depends(get_db)):
+    """백업 JSON 파일 데이터를 파싱하여 데이터베이스에 복원 및 적용"""
+    mode = payload.mode
+    backup_data = payload.data
+
+    items_in = backup_data.get("items", [])
+    txs_in = backup_data.get("transactions", [])
+    boms_in = backup_data.get("boms", [])
+    notices_in = backup_data.get("notices", [])
+
+    if not isinstance(items_in, list):
+        raise HTTPException(status_code=400, detail="올바른 백업 데이터 형식이 아닙니다 (items 누락).")
+
+    try:
+        if mode == "overwrite":
+            # 전체 덮어쓰기: 기존 테이블 모두 비우고 완전 복원
+            db.query(models.Notice).delete()
+            db.query(models.BOMItem).delete()
+            db.query(models.Transaction).delete()
+            db.query(models.Item).delete()
+            db.commit()
+
+            id_map = {}
+            for raw in items_in:
+                old_id = raw.get("id")
+                new_item = models.Item(
+                    item_code=raw.get("item_code"),
+                    name=raw.get("name"),
+                    item_type=raw.get("item_type", "part"),
+                    category=raw.get("category", "일반"),
+                    spec=raw.get("spec", ""),
+                    unit=raw.get("unit", "EA"),
+                    location=raw.get("location", ""),
+                    unit_price=raw.get("unit_price", 0),
+                    current_stock=raw.get("current_stock", 0),
+                    safety_stock=raw.get("safety_stock", 0),
+                    note=raw.get("note", "")
+                )
+                db.add(new_item)
+                db.flush()
+                if old_id:
+                    id_map[old_id] = new_item.id
+
+            for raw_tx in txs_in:
+                old_item_id = raw_tx.get("item_id")
+                target_item_id = id_map.get(old_item_id, old_item_id)
+                ts = None
+                if raw_tx.get("timestamp"):
+                    try:
+                        ts = datetime.strptime(raw_tx["timestamp"], "%Y-%m-%d %H:%M:%S")
+                    except Exception:
+                        ts = datetime.utcnow()
+                else:
+                    ts = datetime.utcnow()
+
+                new_tx = models.Transaction(
+                    item_id=target_item_id,
+                    tx_type=raw_tx.get("tx_type", "in"),
+                    sub_type=raw_tx.get("sub_type", ""),
+                    quantity=raw_tx.get("quantity", 0),
+                    unit_price=raw_tx.get("unit_price", 0),
+                    worker=raw_tx.get("worker", ""),
+                    lot_number=raw_tx.get("lot_number", ""),
+                    company_name=raw_tx.get("company_name", ""),
+                    timestamp=ts,
+                    note=raw_tx.get("note", "")
+                )
+                db.add(new_tx)
+
+            for raw_bom in boms_in:
+                old_prod_id = raw_bom.get("product_id")
+                old_part_id = raw_bom.get("part_id")
+                target_prod_id = id_map.get(old_prod_id, old_prod_id)
+                target_part_id = id_map.get(old_part_id, old_part_id)
+                if target_prod_id and target_part_id:
+                    new_bom = models.BOMItem(
+                        product_id=target_prod_id,
+                        part_id=target_part_id,
+                        quantity_required=raw_bom.get("quantity_required", 1)
+                    )
+                    db.add(new_bom)
+
+            for raw_n in notices_in:
+                new_n = models.Notice(
+                    content=raw_n.get("content", ""),
+                    is_resolved=raw_n.get("is_resolved", 0)
+                )
+                db.add(new_n)
+
+            db.commit()
+
+            return {
+                "success": True,
+                "mode": "overwrite",
+                "message": f"성공적으로 전체 데이터를 복원했습니다. (품목 {len(items_in)}건, 입출고 {len(txs_in)}건, BOM {len(boms_in)}건, 공지 {len(notices_in)}건)",
+                "counts": {
+                    "items": len(items_in),
+                    "transactions": len(txs_in),
+                    "boms": len(boms_in),
+                    "notices": len(notices_in)
+                }
+            }
+
+        else:
+            # 병합 모드 (Merge)
+            existing_items = db.query(models.Item).all()
+            code_map = {i.item_code: i for i in existing_items if i.item_code}
+            name_spec_map = {(i.name, i.spec or ""): i for i in existing_items}
+            id_map = {}
+
+            created_items_cnt = 0
+            updated_items_cnt = 0
+
+            for raw in items_in:
+                old_id = raw.get("id")
+                code = raw.get("item_code")
+                name = raw.get("name")
+                spec = raw.get("spec", "")
+
+                target_item = None
+                if code and code in code_map:
+                    target_item = code_map[code]
+                elif (name, spec) in name_spec_map:
+                    target_item = name_spec_map[(name, spec)]
+
+                if target_item:
+                    # Update stock and info
+                    target_item.current_stock = raw.get("current_stock", target_item.current_stock)
+                    target_item.safety_stock = raw.get("safety_stock", target_item.safety_stock)
+                    target_item.unit_price = raw.get("unit_price", target_item.unit_price)
+                    target_item.location = raw.get("location", target_item.location)
+                    if old_id:
+                        id_map[old_id] = target_item.id
+                    updated_items_cnt += 1
+                else:
+                    new_item = models.Item(
+                        item_code=code,
+                        name=name,
+                        item_type=raw.get("item_type", "part"),
+                        category=raw.get("category", "일반"),
+                        spec=spec,
+                        unit=raw.get("unit", "EA"),
+                        location=raw.get("location", ""),
+                        unit_price=raw.get("unit_price", 0),
+                        current_stock=raw.get("current_stock", 0),
+                        safety_stock=raw.get("safety_stock", 0),
+                        note=raw.get("note", "")
+                    )
+                    db.add(new_item)
+                    db.flush()
+                    if old_id:
+                        id_map[old_id] = new_item.id
+                    created_items_cnt += 1
+
+            # Import Transactions
+            tx_cnt = 0
+            for raw_tx in txs_in:
+                old_item_id = raw_tx.get("item_id")
+                target_item_id = id_map.get(old_item_id)
+                if target_item_id:
+                    ts = None
+                    if raw_tx.get("timestamp"):
+                        try:
+                            ts = datetime.strptime(raw_tx["timestamp"], "%Y-%m-%d %H:%M:%S")
+                        except Exception:
+                            ts = datetime.utcnow()
+                    else:
+                        ts = datetime.utcnow()
+
+                    new_tx = models.Transaction(
+                        item_id=target_item_id,
+                        tx_type=raw_tx.get("tx_type", "in"),
+                        sub_type=raw_tx.get("sub_type", ""),
+                        quantity=raw_tx.get("quantity", 0),
+                        unit_price=raw_tx.get("unit_price", 0),
+                        worker=raw_tx.get("worker", ""),
+                        lot_number=raw_tx.get("lot_number", ""),
+                        company_name=raw_tx.get("company_name", ""),
+                        timestamp=ts,
+                        note=raw_tx.get("note", "")
+                    )
+                    db.add(new_tx)
+                    tx_cnt += 1
+
+            db.commit()
+            return {
+                "success": True,
+                "mode": "merge",
+                "message": f"데이터 병합 복원이 완료되었습니다. (신규 등록 {created_items_cnt}건, 갱신 {updated_items_cnt}건, 입출고 {tx_cnt}건)",
+                "counts": {
+                    "created_items": created_items_cnt,
+                    "updated_items": updated_items_cnt,
+                    "transactions": tx_cnt
+                }
+            }
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"복원 처리 중 오류 발생: {str(e)}")
+
+@app.get("/api/backup/download-db")
+def download_database_file():
+    """SQLite 데이터베이스 원본 파일 직접 다운로드"""
+    db_path = "inventory.db"
+    if not os.path.exists(db_path):
+        raise HTTPException(status_code=404, detail="데이터베이스 파일을 찾을 수 없습니다.")
+    filename = f"inventory_backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}.db"
+    return FileResponse(
+        path=db_path,
+        filename=filename,
+        media_type="application/x-sqlite3"
+    )
+
 # --- Static files ---
 import os
 os.makedirs("static", exist_ok=True)
