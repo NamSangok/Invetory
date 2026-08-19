@@ -93,6 +93,58 @@ const storageService = {
         return item;
     },
 
+    saveItemsBulk(itemsList) {
+        const data = this.getData();
+        data.items = data.items || [];
+        data.transactions = data.transactions || [];
+        let maxId = data.items.reduce((max, i) => Math.max(max, i.id || 0), 0);
+        let maxTxId = data.transactions.reduce((max, t) => Math.max(max, t.id || 0), 0);
+        const nowStr = new Date().toISOString().replace('T', ' ').substring(0, 19);
+
+        let addedCount = 0;
+        itemsList.forEach(item => {
+            if (!item || !item.name) return;
+            maxId++;
+            const newItem = {
+                id: maxId,
+                name: String(item.name).trim(),
+                item_type: item.item_type === 'product' ? 'product' : 'part',
+                item_code: item.item_code ? String(item.item_code).trim() : `${item.item_type === 'product' ? 'PRD' : 'PRT'}-${String(maxId).padStart(4, '0')}`,
+                category: item.category ? String(item.category).trim() : (item.item_type === 'product' ? '완제품' : '원자재'),
+                spec: item.spec ? String(item.spec).trim() : '',
+                unit: item.unit ? String(item.unit).trim() : 'EA',
+                location: item.location ? String(item.location).trim() : '',
+                unit_price: parseInt(item.unit_price) || 0,
+                current_stock: parseInt(item.current_stock) || 0,
+                safety_stock: parseInt(item.safety_stock) || 0,
+                note: item.note ? String(item.note).trim() : '',
+                created_at: nowStr
+            };
+            data.items.push(newItem);
+
+            // Record initial stock transaction if stock > 0
+            if (newItem.current_stock > 0) {
+                maxTxId++;
+                data.transactions.unshift({
+                    id: maxTxId,
+                    item_id: newItem.id,
+                    tx_type: 'in',
+                    sub_type: '초기재고',
+                    quantity: newItem.current_stock,
+                    unit_price: newItem.unit_price,
+                    worker: '엑셀일괄등록',
+                    company_name: '초기등록',
+                    timestamp: nowStr,
+                    note: '엑셀 일괄 등록 시 초기 재고 설정'
+                });
+            }
+            addedCount++;
+        });
+
+        this.saveData(data);
+        return { total: itemsList.length, success: addedCount, failed: itemsList.length - addedCount };
+    },
+
     deleteItem(id) {
         const data = this.getData();
         data.items = (data.items || []).filter(i => i.id != id);
@@ -568,6 +620,10 @@ function resolveOfflineApi(url, options = {}) {
             const body = JSON.parse(options.body);
             return storageService.saveItem(body);
         }
+    }
+    if (path === '/api/items/bulk' && method === 'POST') {
+        const body = JSON.parse(options.body);
+        return storageService.saveItemsBulk(body);
     }
     if (path.startsWith('/api/items/')) {
         const id = path.split('/')[3];
@@ -2199,110 +2255,205 @@ async function processExcelUpload() {
     const file = fileInput.files[0];
     const reader = new FileReader();
 
+    Swal.fire({
+        title: '엑셀 데이터 분석 중...',
+        text: '파일을 읽고 품목을 일괄 등록하고 있습니다.',
+        allowOutsideClick: false,
+        didOpen: () => Swal.showLoading()
+    });
+
     reader.onload = async (e) => {
         try {
             const data = new Uint8Array(e.target.result);
             const workbook = XLSX.read(data, { type: 'array' });
-            const firstSheetName = workbook.SheetNames[0];
-            const worksheet = workbook.Sheets[firstSheetName];
-            const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-
-            if (rows.length < 2) {
-                throw new Error('엑셀 파일에 유효한 데이터가 없습니다.');
+            
+            // Find first sheet with rows
+            let targetSheet = null;
+            for (const name of workbook.SheetNames) {
+                const ws = workbook.Sheets[name];
+                if (ws && ws['!ref']) {
+                    targetSheet = ws;
+                    break;
+                }
             }
 
-            const headerRow = (rows[0] || []).map(h => String(h || '').trim().toLowerCase());
-            
-            // Check if column 0 is item_code (e.g. contains '코드' or '바코드' or 'code')
-            const hasCodeCol = headerRow[0] && (
-                headerRow[0].includes('코드') || 
-                headerRow[0].includes('바코드') || 
-                headerRow[0].includes('code')
-            );
+            if (!targetSheet) {
+                throw new Error('엑셀 파일에 유효한 시트가 없습니다.');
+            }
 
-            let successCnt = 0;
-            for (let i = 1; i < rows.length; i++) {
+            const rows = XLSX.utils.sheet_to_json(targetSheet, { header: 1, defval: '' });
+            if (!rows || rows.length < 2) {
+                throw new Error('엑셀 파일에 데이터가 비어있습니다. (최소 헤더 1행 + 데이터 1행 필요)');
+            }
+
+            // 1. Auto-detect Header Row Index (Search first 10 rows)
+            let headerRowIndex = 0;
+            let colMap = {
+                code: -1,
+                type: -1,
+                name: -1,
+                spec: -1,
+                category: -1,
+                unit: -1,
+                location: -1,
+                price: -1,
+                stock: -1,
+                safety: -1,
+                note: -1
+            };
+
+            for (let r = 0; r < Math.min(10, rows.length); r++) {
+                const rowCells = (rows[r] || []).map(c => String(c || '').trim().toLowerCase().replace(/\s+/g, ''));
+                
+                let foundName = -1;
+                let foundType = -1;
+
+                rowCells.forEach((cell, cIdx) => {
+                    if (/^(품명|품목명|제품명|부품명|itemname|name|title)$/i.test(cell) || (cell.includes('품명') && !cell.includes('코드'))) {
+                        foundName = cIdx;
+                    }
+                    if (/^(구분|유형|분류|type|itemtype|kind)$/i.test(cell) || cell.includes('구분') || cell.includes('유형')) {
+                        foundType = cIdx;
+                    }
+                });
+
+                if (foundName !== -1 || (foundType !== -1 && rowCells.length >= 3)) {
+                    headerRowIndex = r;
+                    // Map all columns from this header row
+                    rowCells.forEach((cell, cIdx) => {
+                        if (colMap.code === -1 && (cell.includes('코드') || cell.includes('바코드') || cell.includes('품번') || cell.includes('code') || cell.includes('barcode'))) {
+                            colMap.code = cIdx;
+                        } else if (colMap.type === -1 && (cell.includes('구분') || cell.includes('유형') || cell.includes('type'))) {
+                            colMap.type = cIdx;
+                        } else if (colMap.name === -1 && (cell.includes('품명') || cell.includes('품목명') || cell.includes('제품명') || cell.includes('부품명') || cell.includes('name') || cell.includes('title'))) {
+                            colMap.name = cIdx;
+                        } else if (colMap.spec === -1 && (cell.includes('규격') || cell.includes('사양') || cell.includes('spec') || cell.includes('size'))) {
+                            colMap.spec = cIdx;
+                        } else if (colMap.category === -1 && (cell.includes('카테고리') || cell.includes('category') || cell.includes('소분류') || cell.includes('대분류'))) {
+                            colMap.category = cIdx;
+                        } else if (colMap.unit === -1 && (cell.includes('단위') || cell.includes('unit') || cell.includes('uom'))) {
+                            colMap.unit = cIdx;
+                        } else if (colMap.location === -1 && (cell.includes('위치') || cell.includes('적재') || cell.includes('보관') || cell.includes('창고') || cell.includes('location'))) {
+                            colMap.location = cIdx;
+                        } else if (colMap.price === -1 && (cell.includes('단가') || cell.includes('가격') || cell.includes('price') || cell.includes('cost'))) {
+                            colMap.price = cIdx;
+                        } else if (colMap.stock === -1 && (cell.includes('현재고') || cell.includes('초기재고') || cell.includes('재고량') || cell.includes('재고') || cell.includes('stock') || cell.includes('qty')) && !cell.includes('안전')) {
+                            colMap.stock = cIdx;
+                        } else if (colMap.safety === -1 && (cell.includes('안전재고') || cell.includes('안전') || cell.includes('safety') || cell.includes('최소'))) {
+                            colMap.safety = cIdx;
+                        } else if (colMap.note === -1 && (cell.includes('비고') || cell.includes('메모') || cell.includes('특이') || cell.includes('note') || cell.includes('remark'))) {
+                            colMap.note = cIdx;
+                        }
+                    });
+                    break;
+                }
+            }
+
+            // Fallback column mapping if headers weren't explicitly named
+            if (colMap.name === -1) {
+                // If col 0 looks like code or has 11 cols
+                if (rows[0] && rows[0].length >= 11) {
+                    colMap = { code: 0, type: 1, name: 2, spec: 3, category: 4, unit: 5, location: 6, price: 7, stock: 8, safety: 9, note: 10 };
+                } else {
+                    colMap = { code: -1, type: 0, name: 1, spec: 2, category: 3, unit: 4, location: 5, price: 6, stock: 7, safety: 8, note: 9 };
+                }
+            }
+
+            // Number cleaner helper
+            const parseNum = (val) => {
+                if (val === null || val === undefined || val === '') return 0;
+                if (typeof val === 'number') return Math.max(0, Math.round(val));
+                const cleaned = String(val).replace(/[^0-9.-]/g, '');
+                return parseInt(cleaned) || 0;
+            };
+
+            const itemsToCreate = [];
+            for (let i = headerRowIndex + 1; i < rows.length; i++) {
                 const r = rows[i];
                 if (!r || r.length === 0) continue;
 
-                let code = null;
-                let type = 'part';
-                let name = '';
-                let spec = null;
-                let category = '일반';
-                let unit = 'EA';
-                let location = null;
-                let unit_price = 0;
-                let current_stock = 0;
-                let safety_stock = 0;
-                let note = null;
+                // Extract name
+                const rawName = colMap.name !== -1 ? r[colMap.name] : (r[1] || r[2] || '');
+                const name = String(rawName || '').trim();
+                if (!name || name === '품명' || name === '예시 데이터') continue;
 
-                if (hasCodeCol) {
-                    // Format with Item Code: [code, type, name, spec, category, unit, location, unit_price, stock, safety, note]
-                    code = r[0] ? String(r[0]).trim() : null;
-                    type = (r[1] || 'part').toString().trim().toLowerCase();
-                    name = r[2] ? String(r[2]).trim() : '';
-                    spec = r[3] ? String(r[3]).trim() : null;
-                    category = r[4] ? String(r[4]).trim() : (type.includes('완') || type.includes('prod') ? '완제품' : '원자재');
-                    unit = r[5] ? String(r[5]).trim() : 'EA';
-                    location = r[6] ? String(r[6]).trim() : null;
-                    unit_price = parseInt(r[7]) || 0;
-                    current_stock = parseInt(r[8]) || 0;
-                    safety_stock = parseInt(r[9]) || 0;
-                    note = r[10] ? String(r[10]).trim() : null;
-                } else {
-                    // Legacy Format: [type, name, spec, category, unit, location, unit_price, stock, safety, note]
-                    type = (r[0] || 'part').toString().trim().toLowerCase();
-                    name = r[1] ? String(r[1]).trim() : '';
-                    spec = r[2] ? String(r[2]).trim() : null;
-                    category = r[3] ? String(r[3]).trim() : (type.includes('완') || type.includes('prod') ? '완제품' : '원자재');
-                    unit = r[4] ? String(r[4]).trim() : 'EA';
-                    location = r[5] ? String(r[5]).trim() : null;
-                    unit_price = parseInt(r[6]) || 0;
-                    current_stock = parseInt(r[7]) || 0;
-                    safety_stock = parseInt(r[8]) || 0;
-                    note = r[9] ? String(r[9]).trim() : null;
+                // Extract item_code
+                const rawCode = colMap.code !== -1 ? r[colMap.code] : '';
+                const code = rawCode ? String(rawCode).trim() : null;
+
+                // Extract item_type
+                const rawType = colMap.type !== -1 ? String(r[colMap.type] || '').trim().toLowerCase() : 'part';
+                let itemType = 'part';
+                if (rawType.includes('완') || rawType.includes('prod') || rawType === '제품' || rawType === '완제품') {
+                    itemType = 'product';
                 }
 
-                if (!name) continue;
+                // Extract spec, category, unit, location, note
+                const spec = colMap.spec !== -1 && r[colMap.spec] !== undefined ? String(r[colMap.spec]).trim() : '';
+                const category = colMap.category !== -1 && r[colMap.category] ? String(r[colMap.category]).trim() : (itemType === 'product' ? '완제품' : '원자재');
+                const unit = colMap.unit !== -1 && r[colMap.unit] ? String(r[colMap.unit]).trim() : 'EA';
+                const location = colMap.location !== -1 && r[colMap.location] !== undefined ? String(r[colMap.location]).trim() : '';
+                const note = colMap.note !== -1 && r[colMap.note] !== undefined ? String(r[colMap.note]).trim() : '';
 
-                if (type.includes('완') || type.includes('prod')) type = 'product';
-                else type = 'part';
+                // Extract numbers
+                const unitPrice = colMap.price !== -1 ? parseNum(r[colMap.price]) : 0;
+                const currentStock = colMap.stock !== -1 ? parseNum(r[colMap.stock]) : 0;
+                const safetyStock = colMap.safety !== -1 ? parseNum(r[colMap.safety]) : 0;
 
-                const itemObj = {
+                itemsToCreate.push({
                     item_code: code,
-                    item_type: type,
+                    item_type: itemType,
                     name: name,
-                    spec: spec,
-                    category: category,
-                    unit: unit,
-                    location: location,
-                    unit_price: unit_price,
-                    current_stock: current_stock,
-                    safety_stock: safety_stock,
-                    note: note
-                };
-
-                await apiRequest('/api/items', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(itemObj)
+                    spec: spec || null,
+                    category: category || '일반',
+                    unit: unit || 'EA',
+                    location: location || null,
+                    unit_price: unitPrice,
+                    current_stock: currentStock,
+                    safety_stock: safetyStock,
+                    note: note || null
                 });
-                successCnt++;
             }
 
-            closeModal('excelImportModal');
-            Swal.fire({
-                icon: 'success',
-                title: '일괄 등록 완료',
-                text: `총 ${successCnt}개 품목이 성공적으로 등록되었습니다.`
+            if (itemsToCreate.length === 0) {
+                throw new Error('엑셀 파일에서 등록 가능한 품목 데이터를 찾지 못했습니다. 품명 열이 올바르게 입력되어 있는지 확인해 주세요.');
+            }
+
+            // Execute Batch Bulk Registration
+            await apiRequest('/api/items/bulk', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(itemsToCreate)
             });
 
-            loadItems();
+            // Also synchronize with client storage directly
+            storageService.saveItemsBulk(itemsToCreate);
+
+            closeModal('excelImportModal');
+
+            await Swal.fire({
+                icon: 'success',
+                title: '엑셀 일괄 등록 완료!',
+                html: `
+                    <div class="text-xs text-left space-y-1 mt-2">
+                        <p class="text-sm font-bold text-teal-700">총 <b>${itemsToCreate.length}개</b> 품목이 성공적으로 등록되었습니다.</p>
+                        <p class="text-slate-500">품목 마스터 및 초기 재고 수량이 시스템에 정상 반영되었습니다.</p>
+                    </div>
+                `,
+                confirmButtonColor: '#0d9488'
+            });
+
             preloadItemOptions();
+            loadItems();
+            if (currentActiveTab === 'dashboard') loadDashboard();
 
         } catch (err) {
-            Swal.fire('엑셀 처리 오류', err.message, 'error');
+            Swal.fire({
+                icon: 'error',
+                title: '엑셀 일괄 등록 오류',
+                text: err.message,
+                confirmButtonColor: '#e11d48'
+            });
         }
     };
     reader.readAsArrayBuffer(file);
